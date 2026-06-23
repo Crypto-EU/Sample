@@ -29,8 +29,8 @@ SUPERMINER was designed after studying existing Pearl miners (**WildRig Multi**,
 ## Quick start (Linux + ROCm)
 
 ```bash
-git clone https://github.com/Crypto-EU/SUPERMINER.git
-cd SUPERMINER
+git clone https://github.com/Crypto-EU/Sample.git
+cd Sample/SUPERMINER
 ./build.sh
 ./out/superminer --pearl-mine \
   --pool stratum+tcp://pool.pearlhash.xyz:9000 \
@@ -110,4 +110,4 @@ Compatible with **Pearlhash** (`pool.pearlhash.xyz:9000`), AlphaPool-style `pear
 
 ## Support
 
-Open an issue on GitHub: https://github.com/Crypto-EU/SUPERMINER/issues
+Open an issue: https://github.com/Crypto-EU/Sample/issues

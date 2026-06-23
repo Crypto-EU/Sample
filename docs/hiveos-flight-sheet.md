@@ -39,7 +39,27 @@ Beispiele fuer Extra config arguments:
 Der Wrapper setzt bereits:
 
 ```text
---coin EXCC --devices AMD
+--coin EXCC --devices AMD --keepfree 0 --nocolor on --compactaccept on
 ```
 
 Wenn ein Extra-Argument denselben lolMiner-Parameter spaeter erneut setzt, verwendet lolMiner in der Regel den zuletzt gelesenen Wert.
+
+## Performance
+
+Der Miner startet lolMiner ohne zusaetzliche Shell-Pipe und nutzt lolMiner-eigene Logs. Dadurch entsteht weniger CPU-/I/O-Overhead als bei einem Wrapper, der die komplette Ausgabe ueber `tee` verarbeitet.
+
+`--keepfree 0` ist auf dedizierten Mining-Rigs meist die schnellere Ausgangsbasis als der lolMiner-Default `5`. Wenn Karten instabil werden oder Speicherfehler zeigen, teste hoehere Werte:
+
+```bash
+cd /hive/miners/custom/excc-amd-lolminer
+sudo EXCC_TUNE_KEEPFREE_VALUES="0 4 8 16 32" ./bin/tune_keepfree.sh
+```
+
+Die wichtigsten Hashrate-Optimierungen fuer AMD-GPUs bleiben Karte-spezifisch und werden in HiveOS gesetzt:
+
+- Core Clock / Core Voltage
+- Memory Clock / Memory Voltage
+- Fan-Zieltemperatur
+- stabile Treiber/OpenCL-Laufzeit
+
+Nutze das Tuning-Skript nach jeder groesseren OC-Aenderung erneut, weil der beste `keepfree`-Wert vom konkreten Rig abhaengt.

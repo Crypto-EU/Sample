@@ -34,6 +34,18 @@ strip_pool_scheme() {
   printf '%s' "$url"
 }
 
+extra_has_arg() {
+  local flag="$1"
+
+  case " $extra_args " in
+    *" ${flag} "*|*" ${flag}="*)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
 pool_url="${CUSTOM_URL:-65.109.139.153:3052}"
 pool_tls="off"
 case "$pool_url" in
@@ -56,6 +68,11 @@ miner_user="$(replace_template_vars "$wallet_template")"
 miner_pass="${CUSTOM_PASS:-x}"
 devices="${EXCC_DEVICES:-AMD}"
 api_port="${EXCC_API_PORT:-8020}"
+api_host="${EXCC_API_HOST:-127.0.0.1}"
+keepfree="${EXCC_KEEPFREE:-0}"
+shortstats="${EXCC_SHORTSTATS:-30}"
+longstats="${EXCC_LONGSTATS:-120}"
+log_file="${CUSTOM_LOG_BASENAME}.log"
 extra_args="${CUSTOM_USER_CONFIG:-}"
 
 if [[ -z "$miner_user" || "$miner_user" == *%WAL%* ]]; then
@@ -78,8 +95,20 @@ mkdir -p "$(dirname "$CUSTOM_CONFIG_FILENAME")"
   printf '  --port %s\n' "$(quote "$pool_port")"
   printf '  --user %s\n' "$(quote "$miner_user")"
   printf '  --pass %s\n' "$(quote "$miner_pass")"
-  printf '  --devices %s\n' "$(quote "$devices")"
+  if ! extra_has_arg --devices; then
+    printf '  --devices %s\n' "$(quote "$devices")"
+  fi
+  if ! extra_has_arg --keepfree; then
+    printf '  --keepfree %s\n' "$(quote "$keepfree")"
+  fi
   printf '  --apiport %s\n' "$(quote "$api_port")"
+  printf '  --apihost %s\n' "$(quote "$api_host")"
+  printf '  --shortstats %s\n' "$(quote "$shortstats")"
+  printf '  --longstats %s\n' "$(quote "$longstats")"
+  printf '  --nocolor %s\n' "$(quote on)"
+  printf '  --compactaccept %s\n' "$(quote on)"
+  printf '  --log %s\n' "$(quote on)"
+  printf '  --logfile %s\n' "$(quote "$log_file")"
   if [[ "$pool_tls" == "on" ]]; then
     printf '  --tls %s\n' "$(quote on)"
   fi

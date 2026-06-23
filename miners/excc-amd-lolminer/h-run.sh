@@ -43,4 +43,4 @@ printf 'Command: %q' "$LOL_MINER_BIN"
 printf ' %q' "${MINER_ARGS[@]}"
 printf '\n'
 
-"$LOL_MINER_BIN" "${MINER_ARGS[@]}" 2>&1 | tee -a "$log_file"
+exec "$LOL_MINER_BIN" "${MINER_ARGS[@]}"

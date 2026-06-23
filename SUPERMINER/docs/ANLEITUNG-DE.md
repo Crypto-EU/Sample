@@ -2,8 +2,8 @@
 
 SUPERMINER ist ein Open-Source-Miner für **Pearl / Pearlhash** auf **AMD-GPUs** (RDNA2/3/4, MI300X) mit **HiveOS-Integration** und **0 % Dev-Fee**.
 
-**Aktuelle Version:** `SUPERMINER-1.1.0`  
-**Release:** https://github.com/Crypto-EU/Sample/releases/tag/superminer-v1.1.0
+**Aktuelle Version:** `SUPERMINER-1.1.1`  
+**Release:** https://github.com/Crypto-EU/Sample/releases/tag/superminer-v1.1.1
 
 ---
 
@@ -47,7 +47,7 @@ SUPERMINER ist ein Open-Source-Miner für **Pearl / Pearlhash** auf **AMD-GPUs**
 **Option A — JSON importieren (empfohlen)**
 
 1. Flight Sheet JSON herunterladen:  
-   https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.0/superminer-pearlhash-flightsheet.json
+   https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.1/superminer-pearlhash-flightsheet.json
 2. HiveOS → **Flight Sheets** → **Import**
 3. JSON einfügen oder Datei hochladen
 4. Im importierten Sheet die **Wallet** (`wal_id`) deiner Pearl-Wallet zuweisen
@@ -59,7 +59,7 @@ SUPERMINER ist ein Open-Source-Miner für **Pearl / Pearlhash** auf **AMD-GPUs**
 | Coin | PEARL |
 | Miner | **Custom** |
 | Miner name | `superminer` |
-| Installation URL | `https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.0/superminer-hiveos-1.1.0.tar.gz` |
+| Installation URL | `https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.1/superminer-hiveos-1.1.0.tar.gz` |
 | Pool | `pool.pearlhash.xyz:9000` |
 | Wallet | `%WAL%` |
 | Pass | `x` oder `x;d=65536` (feste Schwierigkeit) |
@@ -85,7 +85,7 @@ HiveOS lädt das Paket beim ersten Start automatisch. Manuell per Shell:
 
 ```bash
 /hive/miners/custom/custom-get \
-  https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.0/superminer-hiveos-1.1.0.tar.gz \
+  https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.1/superminer-hiveos-1.1.0.tar.gz \
   -f
 ```
 
@@ -103,7 +103,7 @@ tail -f /var/log/miner/custom/superminer.log
 
 ```
 self-test: OK
-SUPERMINER-1.1.0 starting on pool.pearlhash.xyz:9000 ...
+SUPERMINER-1.1.1 starting on pool.pearlhash.xyz:9000 ...
 device 0: arch=gfx1030 profile M=4096 N=32768 K=4096 R=256
 stratum connected to pool.pearlhash.xyz:9000 (pearl_v1=1)
 stratum job gen=1 id=... m=4096 n=... k=4096 r=256 sigma=...B b_seed=32B
@@ -223,15 +223,27 @@ Auf Consumer-AMD (RX 6000/7000) ist **WildRig Multi** derzeit oft schneller als 
 
 ## 6. Fehlerbehebung
 
+### `unknown argument: HSA_OVERRIDE_GFX_VERSION=10.3.0`
+
+**Ursache:** Alte `h-run.sh` (v1.1.1) hat Umgebungsvariablen als Miner-Argumente übergeben.
+
+**Lösung:** Auf **v1.1.1** aktualisieren.
+
+### Miner bricht sofort ab / `unbuffer: command not found`
+
+**Ursache:** `unbuffer` fehlt auf HiveOS.
+
+**Lösung:** v1.1.1 nutzt `stdbuf` oder direkten Start.
+
 ### `libpearl_gemm_capi.so not found`
 
 **Ursache:** Altes Paket (v1.0.0) oder unvollständige Installation.
 
-**Lösung:** Miner neu installieren (v1.1.0):
+**Lösung:** Miner neu installieren (v1.1.1):
 
 ```bash
 /hive/miners/custom/custom-get \
-  https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.0/superminer-hiveos-1.1.0.tar.gz \
+  https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.1/superminer-hiveos-1.1.0.tar.gz \
   -f
 ```
 
@@ -292,8 +304,8 @@ In HiveOS Extra Config oder als Rig-Variable setzen.
 
 | Datei | URL |
 |---|---|
-| **HiveOS-Paket (tar.gz)** | https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.0/superminer-hiveos-1.1.0.tar.gz |
-| **Flight Sheet JSON** | https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.0/superminer-pearlhash-flightsheet.json |
+| **HiveOS-Paket (tar.gz)** | https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.1/superminer-hiveos-1.1.0.tar.gz |
+| **Flight Sheet JSON** | https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.1/superminer-pearlhash-flightsheet.json |
 | **Quellcode** | https://github.com/Crypto-EU/Sample/tree/cursor/superminer-amd-df71/SUPERMINER |
 | **Issues / Support** | https://github.com/Crypto-EU/Sample/issues |
 
@@ -317,7 +329,7 @@ In HiveOS Extra Config oder als Rig-Variable setzen.
 ## Kurz-Checkliste
 
 - [ ] Pearl-Wallet (`prl1…`) in HiveOS angelegt
-- [ ] Flight Sheet mit v1.1.0 Install-URL
+- [ ] Flight Sheet mit v1.1.1 Install-URL
 - [ ] `HSA_OVERRIDE_GFX_VERSION=10.3.0` für RX 6800 XT
 - [ ] `--devices 0 --batch 32` in Extra Config
 - [ ] Miner-Log: `self-test: OK` → `stratum connected` → `sigma installed`

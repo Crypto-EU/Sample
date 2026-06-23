@@ -14,8 +14,8 @@
         "algo": "pearlhash",
         "miner": "superminer",
         "template": "%WAL%",
-        "install_url": "https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.0/superminer-hiveos-1.1.0.tar.gz",
-        "user_config": "--devices 0 --batch 32"
+        "install_url": "https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.1/superminer-hiveos-1.1.1.tar.gz",
+        "user_config": "HSA_OVERRIDE_GFX_VERSION=10.3.0 --devices 0 --batch 32"
       },
       "pool_geo": []
     }

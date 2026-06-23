@@ -6,8 +6,8 @@
 
 namespace sm {
 
-constexpr const char* kVersion = "SUPERMINER-1.1.0";
-constexpr const char* kAgent = "SUPERMINER/1.1.0";
+constexpr const char* kVersion = "SUPERMINER-1.1.1";
+constexpr const char* kAgent = "SUPERMINER/1.1.1";
 
 struct GpuProfile {
   std::string name;

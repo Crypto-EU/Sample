@@ -24,7 +24,7 @@ Falls EXCC in HiveOS nicht als Coin vorhanden ist:
 | Miner name | `excc-amd-lolminer` |
 | Installation URL | Repository-Installationsskript oder gebautes tar.gz |
 | Wallet and worker template | `%WAL%.%WORKER_NAME%` |
-| Pool URL | `65.109.139.153:3052` |
+| Pool URL | `pplns.techminehub.com:6001` |
 | Pass | `x` |
 | Extra config arguments | leer lassen oder eigene lolMiner-Argumente |
 

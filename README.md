@@ -8,7 +8,7 @@ Der empfohlene Miner in diesem Repository ist jetzt `excc-native-miner`. Er star
 - Algorithmus: `Equihash 144/5` / `EQUI144_5`
 - Backend: eigener nativer Solver, kein lolMiner
 - Stratum-Submit-Format: EXCC/gominer-kompatibel
-- Standard-Pool: `65.109.139.153:3052`
+- Standard-Pool: `pplns.techminehub.com:6001`
 
 Wichtig: Diese native Version ist experimentell. Sie ist offen und ohne lolMiner, aber ein performanter AMD-OpenCL-Kernel fuer Equihash 144/5 ist ein eigenstaendiges grosses Entwicklungsprojekt. Die aktuelle native Version priorisiert Korrektheit, Transparenz und Erweiterbarkeit; sie wird nicht automatisch schneller sein als ein jahrelang optimierter Closed-Source-Miner.
 
@@ -26,7 +26,7 @@ Danach in HiveOS eine Flight Sheet mit Custom Miner anlegen:
 | --- | --- |
 | Miner | `excc-native-miner` |
 | Wallet and worker template | `%WAL%.%WORKER_NAME%` |
-| Pool URL | `65.109.139.153:3052` |
+| Pool URL | `pplns.techminehub.com:6001` |
 | Pass | `x` |
 | Extra config arguments | optional, z.B. `--threads 8 --range 1` |
 
@@ -87,7 +87,7 @@ Dieses Archiv kann auf HiveOS mit dem Custom-Miner-Mechanismus installiert werde
 
 `excc-native-miner/h-config.sh` liest die HiveOS Custom-Miner-Variablen:
 
-- `CUSTOM_URL`: Pool, z.B. `65.109.139.153:3052` oder `stratum+ssl://host:port`
+- `CUSTOM_URL`: Pool, z.B. `pplns.techminehub.com:6001` oder `stratum+ssl://host:port`
 - `CUSTOM_TEMPLATE`: Wallet/Worker-Template, z.B. `%WAL%.%WORKER_NAME%`
 - `CUSTOM_PASS`: Pool-Passwort, Default `x`
 - `CUSTOM_USER_CONFIG`: zusaetzliche native Miner-Argumente

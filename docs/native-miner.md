@@ -30,7 +30,7 @@ curl -fsSL https://raw.githubusercontent.com/Crypto-EU/Sample/cursor/hiveos-excc
 | Miner | `Custom` |
 | Miner name | `excc-native-miner` |
 | Wallet and worker template | `%WAL%.%WORKER_NAME%` |
-| Pool URL | `65.109.139.153:3052` |
+| Pool URL | `pplns.techminehub.com:6001` |
 | Pass | `x` |
 | Extra config arguments | leer lassen oder native Optionen |
 

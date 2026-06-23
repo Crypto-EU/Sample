@@ -30,14 +30,14 @@ strip_pool_scheme() {
   printf '%s' "$url"
 }
 
-pool_url="${CUSTOM_URL:-65.109.139.153:3052}"
+pool_url="${CUSTOM_URL:-pplns.techminehub.com:6001}"
 pool_without_scheme="$(strip_pool_scheme "$pool_url")"
 pool_authority="${pool_without_scheme%%/*}"
 pool_host="${pool_authority%%:*}"
 pool_port="${pool_authority##*:}"
 
 if [[ "$pool_port" == "$pool_authority" || -z "$pool_port" ]]; then
-  pool_port="3052"
+  pool_port="6001"
 fi
 
 wallet_template="${CUSTOM_TEMPLATE:-%WAL%.%WORKER_NAME%}"

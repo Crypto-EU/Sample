@@ -66,7 +66,7 @@ detect_rx5700xt() {
   return 1
 }
 
-pool_url="${CUSTOM_URL:-65.109.139.153:3052}"
+pool_url="${CUSTOM_URL:-pplns.techminehub.com:6001}"
 pool_tls="off"
 case "$pool_url" in
   stratum+ssl://*|stratum+tls://*|ssl://*|tls://*)
@@ -80,7 +80,7 @@ pool_host="${pool_host%%:*}"
 pool_port="${pool_without_scheme##*:}"
 
 if [[ "$pool_port" == "$pool_without_scheme" || -z "$pool_port" ]]; then
-  pool_port="3052"
+  pool_port="6001"
 fi
 
 wallet_template="${CUSTOM_TEMPLATE:-%WAL%.%WORKER_NAME%}"
@@ -120,7 +120,7 @@ if [[ -z "$miner_user" || "$miner_user" == *%WAL%* ]]; then
 fi
 
 if [[ -z "$pool_host" || -z "$pool_port" ]]; then
-  echo "EXCC pool is missing. Example: 65.109.139.153:3052" >&2
+  echo "EXCC pool is missing. Example: pplns.techminehub.com:6001" >&2
   return 1 2>/dev/null || exit 1
 fi
 

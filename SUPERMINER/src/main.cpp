@@ -23,6 +23,7 @@ static void print_help() {
       << "  --pearl-r N          Noise rank (default 256)\n"
       << "  --batch N            Iterations per GPU sync batch (default 8)\n"
       << "  --list-devices       List detected AMD GPUs and exit\n"
+      << "  --self-test          Verify GPU libs and HIP, then exit\n"
       << "  -V, --version        Print version\n"
       << "  -h, --help           This help\n";
 }
@@ -80,6 +81,9 @@ int main(int argc, char** argv) {
         std::cout << j << ": " << devs[j].name << " arch=" << devs[j].arch << "\n";
       }
       return devs.empty() ? 1 : 0;
+    }
+    if (arg == "--self-test") {
+      return MinerApp::self_test();
     }
     auto need = [&](const char* flag) -> std::string {
       if (i + 1 >= argc) {

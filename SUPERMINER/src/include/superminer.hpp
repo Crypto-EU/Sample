@@ -6,8 +6,8 @@
 
 namespace sm {
 
-constexpr const char* kVersion = "SUPERMINER-1.0.0";
-constexpr const char* kAgent = "SUPERMINER/1.0.0";
+constexpr const char* kVersion = "SUPERMINER-1.0.1";
+constexpr const char* kAgent = "SUPERMINER/1.0.1";
 
 struct GpuProfile {
   std::string name;
@@ -43,5 +43,6 @@ struct GpuStats {
 
 void log_info(const char* fmt, ...);
 void log_error(const char* fmt, ...);
+std::string base64_encode(const uint8_t* data, size_t len);
 
 }  // namespace sm

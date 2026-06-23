@@ -4,7 +4,9 @@
 // and the C-ABI backend.
 #pragma once
 #include "blake3_device.cuh"
+#ifndef SUPERMINER_GFX10_BUILD
 #include <rocwmma/rocwmma.hpp>
+#endif
 #include <hip/hip_fp16.h>
 
 namespace pk {
@@ -84,7 +86,8 @@ __global__ void k_perm(int8_t* Km,int8_t* Rm,int req,int R,const uint8_t* seed,c
     if(Rm){ Rm[(size_t)L*R+fi]=1; Rm[(size_t)L*R+si]=-1; }}
 }
 
-// ── int8 GEMM: rocWMMA, C[M,N]=A[M,K]@B[K,N] row-major → int32 ──────
+// ── int8 GEMM ─────────────────────────────────────────────────────
+#ifndef SUPERMINER_GFX10_BUILD
 __global__ void k_wmma_gemm(const int8_t* A,const int8_t* B,int32_t* C,int M,int N,int K){
   using namespace rocwmma; int tM=blockIdx.y,tN=blockIdx.x;
   fragment<matrix_a,16,16,16,int8_t,row_major> a;
@@ -94,6 +97,20 @@ __global__ void k_wmma_gemm(const int8_t* A,const int8_t* B,int32_t* C,int M,int
     load_matrix_sync(b,B+kk*N+tN*16,N); mma_sync(c,a,b,c); }
   store_matrix_sync(C+(tM*16)*N+tN*16,c,N,mem_row_major);
 }
+#else
+__global__ void k_wmma_gemm(const int8_t* A,const int8_t* B,int32_t* C,int M,int N,int K){
+  int idx=blockIdx.x*blockDim.x+threadIdx.x;
+  int total=(M/16)*(N/16)*256;
+  if(idx>=total) return;
+  int tile=idx/256, lane=idx%256;
+  int ti=tile/(N/16), tj=tile%(N/16);
+  int a=lane/16, b=lane%16;
+  int m0=ti*16+a, n0=tj*16+b;
+  int32_t sum=0;
+  for(int kk=0;kk<K;++kk) sum+=(int)A[(size_t)m0*K+kk]*(int)B[(size_t)kk*N+n0];
+  C[(size_t)ti*16*N+tj*16*16+a*16+b]=sum;
+}
+#endif
 __global__ void k_add_i8(const int8_t* A,const int32_t* E,int8_t* o,int n){
   int i=blockIdx.x*blockDim.x+threadIdx.x; if(i<n) o[i]=(int8_t)((int)A[i]+(int)(int8_t)E[i]);
 }
@@ -168,6 +185,7 @@ __global__ void k_bseed(const u32* seed_words,int8_t* out,long n){
     for(int b=0;b<4;++b){long idx=base+w*4+b; if(idx<n){u32 by=(v>>(b*8))&0xFF; out[idx]=(int8_t)((int)(by%127)-63);}}}
 }
 
+#ifndef SUPERMINER_GFX10_BUILD
 // ── fast transcript-GEMM + fused distributed PoW (rocWMMA v6) ───────
 // C_noised = ApEA[m,k]·Bn[k,n] on MFMA; per 16×16 tile XOR transcript (every R),
 // deferred cross-lane reduce, then keyed-BLAKE3 PoW distributed across lanes 0-3;
@@ -362,6 +380,49 @@ __global__ void k_pow_check(const u32* __restrict__ transcripts,int ntiles,int t
     __threadfence();
   }
 }
+
+#else
+// RDNA2 portable fused GEMM + PoW (RX 6000 / gfx1030)
+__global__ void k_tgemm_pow_portable(const int8_t* __restrict__ A,const int8_t* __restrict__ Bn,
+                            int m,int n,int k,int R,
+                            const u32* __restrict__ pow_key,const u32* __restrict__ pow_target,
+                            int* __restrict__ host_signal){
+  int tilesN=n/16;
+  int t=blockIdx.x*blockDim.x+threadIdx.x;
+  int nt=(m/16)*tilesN;
+  if(t>=nt) return;
+  int ti=t/tilesN, tj=t%tilesN;
+  int m0=ti*16, n0=tj*16;
+  int32_t acc[16][16];
+  for(int a=0;a<16;++a) for(int b=0;b<16;++b) acc[a][b]=0;
+  u32 tr[16];
+  for(int i=0;i<16;++i) tr[i]=0;
+  for(int s=0;s<k/R;++s){
+    for(int a=0;a<16;++a){
+      const int8_t* Ar=A+(size_t)(m0+a)*k+s*R;
+      for(int b=0;b<16;++b){
+        int32_t sum=0;
+        for(int kk=0;kk<R;++kk) sum+=(int)Ar[kk]*(int)Bn[(size_t)(s*R+kk)*n+n0+b];
+        acc[a][b]+=sum;
+      }
+    }
+    u32 h=0;
+    for(int a=0;a<16;++a) for(int b=0;b<16;++b) h^=(u32)acc[a][b];
+    tr[s%16]=rotl32(tr[s%16],13)^h;
+  }
+  uint8_t tb[64];
+  for(int i=0;i<16;++i){
+    tb[i*4]=tr[i]&0xff; tb[i*4+1]=(tr[i]>>8)&0xff;
+    tb[i*4+2]=(tr[i]>>16)&0xff; tb[i*4+3]=(tr[i]>>24)&0xff;
+  }
+  uint8_t hh[32]; b3::hash_small(tb,64,pow_key,hh);
+  u32 hw[8];
+  for(int i=0;i<8;++i) hw[i]=(u32)hh[i*4]|((u32)hh[i*4+1]<<8)|((u32)hh[i*4+2]<<16)|((u32)hh[i*4+3]<<24);
+  int fnd=1;
+  for(int i=7;i>=0;--i){ if(hw[i]>pow_target[i]){fnd=0;break;} if(hw[i]<pow_target[i])break; }
+  if(fnd && host_signal) atomicExch(host_signal,1);
+}
+#endif
 
 // ── parallel tensor_hash (Merkle). One thread per 1024-B chunk → leaf
 // CV; then log levels of parent reduction. Replaces single-thread k_tensor_hash.

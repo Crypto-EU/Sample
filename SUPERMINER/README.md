@@ -60,10 +60,12 @@ cd Sample/SUPERMINER
 
 4. Apply the flight sheet to your AMD rigs and start mining.
 
-Example flight sheet JSON (Pearlhash pool):
+Example flight sheet JSON (Pearlhash pool) — **download or import**:
+
+https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.0.0/superminer-pearlhash-flightsheet.json
 
 ```json
-{"name":"superminer-pearlhash","items":[{"coin":"PEARL","miner":"custom","miner_alt":"superminer","miner_config":{"url":"pool.pearlhash.xyz:9000","algo":"pearlhash","miner":"superminer","template":"%WAL%","install_url":"https://github.com/Crypto-EU/SUPERMINER/releases/download/v1.0.0/superminer-hiveos-1.0.0.tar.gz","user_config":""}}]}
+{"name":"SUPERMINER-Pearlhash-AMD","isFavorite":true,"items":[{"coin":"PEARL","pool_ssl":false,"wal_id":0,"dpool_ssl":false,"miner":"custom","miner_alt":"superminer","miner_config":{"url":"pool.pearlhash.xyz:9000","algo":"pearlhash","miner":"superminer","template":"%WAL%","install_url":"https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.0.0/superminer-hiveos-1.0.0.tar.gz","user_config":"--devices 0 --batch 8"},"pool_geo":[]}]}
 ```
 
 ## CLI reference

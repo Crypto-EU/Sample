@@ -1,0 +1,7 @@
+/out/
+/dist/
+/native/target/
+*.o
+*.so
+*.tar.gz
+.DS_Store

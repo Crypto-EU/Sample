@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["pearl-blake3", "pearl-mining-capi", "superminer-share"]
+
+[profile.release]
+strip = true
+debug = false

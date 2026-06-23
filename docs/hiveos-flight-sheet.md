@@ -42,6 +42,14 @@ Der Wrapper setzt bereits:
 --coin EXCC --devices AMD --keepfree 0 --nocolor on --compactaccept on
 ```
 
+Auf RX 5700 XT / Navi10 wird automatisch zusaetzlich ein spezielles Profil aktiv:
+
+```text
+EXCC_GPU_PROFILE=rx5700xt
+HSA_ENABLE_SDMA=0
+--statsformat compact
+```
+
 Wenn ein Extra-Argument denselben lolMiner-Parameter spaeter erneut setzt, verwendet lolMiner in der Regel den zuletzt gelesenen Wert.
 
 ## Performance
@@ -54,6 +62,15 @@ Der Miner startet lolMiner ohne zusaetzliche Shell-Pipe und nutzt lolMiner-eigen
 cd /hive/miners/custom/excc-amd-lolminer
 sudo EXCC_TUNE_KEEPFREE_VALUES="0 4 8 16 32" ./bin/tune_keepfree.sh
 ```
+
+Fuer RX 5700 XT:
+
+```bash
+cd /hive/miners/custom/excc-amd-lolminer
+sudo ./bin/tune_rx5700xt.sh
+```
+
+Siehe auch: [`docs/rx5700xt-tuning.md`](rx5700xt-tuning.md)
 
 Die wichtigsten Hashrate-Optimierungen fuer AMD-GPUs bleiben Karte-spezifisch und werden in HiveOS gesetzt:
 

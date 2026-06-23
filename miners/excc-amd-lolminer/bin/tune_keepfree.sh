@@ -3,9 +3,45 @@ set -euo pipefail
 
 MINER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
 LOL_MINER_BIN="${MINER_DIR}/lolminer/lolMiner"
-SECONDS_PER_TEST="${EXCC_TUNE_SECONDS:-90}"
-CANDIDATES="${EXCC_TUNE_KEEPFREE_VALUES:-0 4 8 16 32}"
 DEVICES="${EXCC_DEVICES:-AMD}"
+GPU_PROFILE="${EXCC_GPU_PROFILE:-auto}"
+
+detect_rx5700xt() {
+  if command -v lspci >/dev/null 2>&1 && lspci | awk 'BEGIN { found = 1 } tolower($0) ~ /(radeon|amd|ati).*(rx 5700 xt|5700 xt|navi 10|731f)/ { found = 0 } END { exit found }'; then
+    return 0
+  fi
+
+  local device_path vendor device
+  for device_path in /sys/class/drm/card*/device; do
+    [[ -r "$device_path/vendor" && -r "$device_path/device" ]] || continue
+    vendor="$(< "$device_path/vendor")"
+    device="$(< "$device_path/device")"
+
+    if [[ "$vendor" == "0x1002" && "$device" == "0x731f" ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+if [[ "$GPU_PROFILE" == "auto" ]]; then
+  if detect_rx5700xt; then
+    GPU_PROFILE="rx5700xt"
+  else
+    GPU_PROFILE="generic-amd"
+  fi
+fi
+
+if [[ "$GPU_PROFILE" == "rx5700xt" ]]; then
+  SECONDS_PER_TEST="${EXCC_TUNE_SECONDS:-120}"
+  CANDIDATES="${EXCC_TUNE_KEEPFREE_VALUES:-0 -8 -16 -32 8 16 32}"
+  HSA_ENABLE_SDMA="${EXCC_HSA_ENABLE_SDMA:-0}"
+else
+  SECONDS_PER_TEST="${EXCC_TUNE_SECONDS:-90}"
+  CANDIDATES="${EXCC_TUNE_KEEPFREE_VALUES:-0 4 8 16 32}"
+  HSA_ENABLE_SDMA="${EXCC_HSA_ENABLE_SDMA:-}"
+fi
 
 parse_hashrate_hs() {
   local log_file="$1"
@@ -58,6 +94,7 @@ best_keepfree=""
 best_hashrate="0"
 
 echo "Benchmarking lolMiner Equihash 144/5 on devices: $DEVICES"
+echo "GPU profile: $GPU_PROFILE"
 echo "Seconds per candidate: $SECONDS_PER_TEST"
 echo "Candidates: $CANDIDATES"
 echo
@@ -67,6 +104,16 @@ for keepfree in $CANDIDATES; do
   echo "Testing --keepfree ${keepfree}..."
 
   set +e
+  if [[ -n "$HSA_ENABLE_SDMA" ]]; then
+    export HSA_ENABLE_SDMA
+  fi
+  export GPU_FORCE_64BIT_PTR="${GPU_FORCE_64BIT_PTR:-1}"
+  export GPU_MAX_HEAP_SIZE="${GPU_MAX_HEAP_SIZE:-100}"
+  export GPU_MAX_ALLOC_PERCENT="${GPU_MAX_ALLOC_PERCENT:-100}"
+  export GPU_SINGLE_ALLOC_PERCENT="${GPU_SINGLE_ALLOC_PERCENT:-100}"
+  export GPU_MAX_SINGLE_ALLOC_PERCENT="${GPU_MAX_SINGLE_ALLOC_PERCENT:-100}"
+  export GPU_USE_SYNC_OBJECTS="${GPU_USE_SYNC_OBJECTS:-1}"
+
   timeout "$SECONDS_PER_TEST" "$LOL_MINER_BIN" \
     --benchmark EQUI144_5 \
     --devices "$DEVICES" \
@@ -75,6 +122,7 @@ for keepfree in $CANDIDATES; do
     --compactaccept on \
     --shortstats 10 \
     --longstats 30 \
+    --statsformat compact \
     --log on \
     --logfile "$log_file" \
     > "$log_file.stdout" 2>&1

@@ -46,6 +46,26 @@ extra_has_arg() {
   return 1
 }
 
+detect_rx5700xt() {
+  if command -v lspci >/dev/null 2>&1 && lspci | awk 'BEGIN { found = 1 } tolower($0) ~ /(radeon|amd|ati).*(rx 5700 xt|5700 xt|navi 10|731f)/ { found = 0 } END { exit found }'; then
+    return 0
+  fi
+
+  local device_path vendor device
+  for device_path in /sys/class/drm/card*/device; do
+    [[ -r "$device_path/vendor" && -r "$device_path/device" ]] || continue
+    vendor="$(< "$device_path/vendor")"
+    device="$(< "$device_path/device")"
+
+    # 1002:731f is Navi 10, used by RX 5700 / RX 5700 XT class cards.
+    if [[ "$vendor" == "0x1002" && "$device" == "0x731f" ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 pool_url="${CUSTOM_URL:-65.109.139.153:3052}"
 pool_tls="off"
 case "$pool_url" in
@@ -67,11 +87,30 @@ wallet_template="${CUSTOM_TEMPLATE:-%WAL%.%WORKER_NAME%}"
 miner_user="$(replace_template_vars "$wallet_template")"
 miner_pass="${CUSTOM_PASS:-x}"
 devices="${EXCC_DEVICES:-AMD}"
+gpu_profile="${EXCC_GPU_PROFILE:-auto}"
+if [[ "$gpu_profile" == "auto" ]]; then
+  if detect_rx5700xt; then
+    gpu_profile="rx5700xt"
+  else
+    gpu_profile="generic-amd"
+  fi
+fi
+
 api_port="${EXCC_API_PORT:-8020}"
 api_host="${EXCC_API_HOST:-127.0.0.1}"
 keepfree="${EXCC_KEEPFREE:-0}"
 shortstats="${EXCC_SHORTSTATS:-30}"
 longstats="${EXCC_LONGSTATS:-120}"
+statsformat="${EXCC_STATSFORMAT:-default}"
+hsa_enable_sdma="${EXCC_HSA_ENABLE_SDMA:-}"
+
+if [[ "$gpu_profile" == "rx5700xt" ]]; then
+  shortstats="${EXCC_SHORTSTATS:-15}"
+  longstats="${EXCC_LONGSTATS:-60}"
+  statsformat="${EXCC_STATSFORMAT:-compact}"
+  hsa_enable_sdma="${EXCC_HSA_ENABLE_SDMA:-0}"
+fi
+
 log_file="${CUSTOM_LOG_BASENAME}.log"
 extra_args="${CUSTOM_USER_CONFIG:-}"
 
@@ -105,6 +144,9 @@ mkdir -p "$(dirname "$CUSTOM_CONFIG_FILENAME")"
   printf '  --apihost %s\n' "$(quote "$api_host")"
   printf '  --shortstats %s\n' "$(quote "$shortstats")"
   printf '  --longstats %s\n' "$(quote "$longstats")"
+  if ! extra_has_arg --statsformat; then
+    printf '  --statsformat %s\n' "$(quote "$statsformat")"
+  fi
   printf '  --nocolor %s\n' "$(quote on)"
   printf '  --compactaccept %s\n' "$(quote on)"
   printf '  --log %s\n' "$(quote on)"
@@ -116,4 +158,6 @@ mkdir -p "$(dirname "$CUSTOM_CONFIG_FILENAME")"
   printf 'EXTRA_ARGS=%s\n' "$(quote "$extra_args")"
   printf 'EXCC_ALGO=%s\n' "$(quote EQUI144_5)"
   printf 'EXCC_COIN=%s\n' "$(quote EXCC)"
+  printf 'EXCC_GPU_PROFILE=%s\n' "$(quote "$gpu_profile")"
+  printf 'EXCC_HSA_ENABLE_SDMA=%s\n' "$(quote "$hsa_enable_sdma")"
 } > "$CUSTOM_CONFIG_FILENAME"

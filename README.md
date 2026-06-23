@@ -8,6 +8,7 @@ Dieses Repository baut keinen eigenen GPU-Miner von Grund auf. Es liefert eine H
 - Algorithmus: `Equihash 144/5` / `EQUI144_5`
 - GPU-Auswahl: `--devices AMD`
 - High-Hashrate-Default: `--keepfree 0`
+- Automatisches RX-5700-XT/Navi10-Profil mit `HSA_ENABLE_SDMA=0`
 - Weniger Wrapper-Overhead: direkter `exec` von lolMiner, lolMiner-eigene Logdatei statt Shell-`tee`
 - Standard-Pool: `65.109.139.153:3052`
 
@@ -36,6 +37,8 @@ Der Miner nutzt AMD-GPUs per Default. Wenn du einzelne Karten auswaehlen willst,
 lolMiner ist ein geschlossener, bereits optimierter GPU-Miner. Dieser Wrapper kann den internen Equihash-Kernel nicht schneller machen als lolMiner selbst. Die Optimierung in diesem Repository zielt deshalb auf die reale Rig-Hashrate:
 
 - `--keepfree 0` statt lolMiner-Default `5`, damit der Miner auf Mining-Rigs weniger VRAM ungenutzt laesst.
+- Automatische RX-5700-XT/Navi10-Erkennung setzt `EXCC_GPU_PROFILE=rx5700xt`.
+- Im RX-5700-XT-Profil wird `HSA_ENABLE_SDMA=0` fuer die AMD/OpenCL-Laufzeit gesetzt.
 - `--nocolor on` und `--compactaccept on`, damit Logs schlanker bleiben und Stats stabiler geparst werden.
 - Direkter Prozessstart per `exec`, keine Shell-Pipe ueber `tee`.
 - API nur lokal per `--apihost 127.0.0.1`.
@@ -70,6 +73,23 @@ Diesen Wert dann als HiveOS Custom-Miner-Umgebungsvariable setzen oder als Extra
 --keepfree 0
 ```
 
+### RX 5700 XT / Navi10 Tuning
+
+Fuer RX 5700 XT gibt es ein eigenes Profil und ein eigenes Tuning-Skript:
+
+```bash
+cd /hive/miners/custom/excc-amd-lolminer
+sudo ./bin/tune_rx5700xt.sh
+```
+
+Nur die empfohlenen HiveOS-OC-Startwerte anzeigen:
+
+```bash
+./bin/tune_rx5700xt.sh --print-only
+```
+
+Details: [docs/rx5700xt-tuning.md](docs/rx5700xt-tuning.md)
+
 ## HiveOS Paket bauen
 
 Lokal oder auf einem Build-System:
@@ -98,11 +118,14 @@ Dieses Archiv kann auf HiveOS mit dem Custom-Miner-Mechanismus installiert werde
 Optionale Umgebungsvariablen:
 
 - `EXCC_DEVICES`: Default `AMD`
+- `EXCC_GPU_PROFILE`: Default `auto`; erkennt RX 5700 XT/Navi10 automatisch, alternativ `rx5700xt`
 - `EXCC_API_PORT`: Default `8020`
 - `EXCC_API_HOST`: Default `127.0.0.1`
 - `EXCC_KEEPFREE`: Default `0`
 - `EXCC_SHORTSTATS`: Default `30`
 - `EXCC_LONGSTATS`: Default `120`
+- `EXCC_STATSFORMAT`: Default `default`, bei RX 5700 XT `compact`
+- `EXCC_HSA_ENABLE_SDMA`: bei RX 5700 XT Default `0`
 - `LOLMINER_VERSION`: Default `1.98a`; setze `latest`, um beim Rig-Setup den neuesten GitHub-Release zu laden
 - `LOLMINER_SHA256`: optionaler SHA256-Check fuer das heruntergeladene lolMiner-Archiv
 
@@ -116,6 +139,7 @@ miners/excc-amd-lolminer/
   h-stats.sh            liefert einfache HiveOS Stats aus dem Miner-Log
   bin/install_lolminer.sh
   bin/tune_keepfree.sh
+  bin/tune_rx5700xt.sh
 install.sh              installiert den Custom Miner auf einem HiveOS-Rig
 build-package.sh        baut ein HiveOS-kompatibles tar.gz
 ```

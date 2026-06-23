@@ -34,10 +34,15 @@ export GPU_FORCE_64BIT_PTR="${GPU_FORCE_64BIT_PTR:-1}"
 export GPU_MAX_HEAP_SIZE="${GPU_MAX_HEAP_SIZE:-100}"
 export GPU_MAX_ALLOC_PERCENT="${GPU_MAX_ALLOC_PERCENT:-100}"
 export GPU_SINGLE_ALLOC_PERCENT="${GPU_SINGLE_ALLOC_PERCENT:-100}"
+export GPU_MAX_SINGLE_ALLOC_PERCENT="${GPU_MAX_SINGLE_ALLOC_PERCENT:-100}"
 export GPU_USE_SYNC_OBJECTS="${GPU_USE_SYNC_OBJECTS:-1}"
+if [[ -n "${EXCC_HSA_ENABLE_SDMA:-}" ]]; then
+  export HSA_ENABLE_SDMA="$EXCC_HSA_ENABLE_SDMA"
+fi
 
 log_file="${CUSTOM_LOG_BASENAME}.log"
 echo "Starting EXCC AMD miner with lolMiner..."
+echo "GPU profile: ${EXCC_GPU_PROFILE:-generic-amd}"
 echo "Log file: $log_file"
 printf 'Command: %q' "$LOL_MINER_BIN"
 printf ' %q' "${MINER_ARGS[@]}"

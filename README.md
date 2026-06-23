@@ -1,17 +1,18 @@
-# EXCC Native Miner fuer HiveOS
+# EXCC AMD Miner fuer HiveOS
 
-HiveOS Custom Miner fuer ExchangeCoin (EXCC) mit Equihash 144/5.
+HiveOS Custom Miner fuer ExchangeCoin (EXCC) mit Equihash 144/5 auf AMD-Grafikkarten, insbesondere RX 5700 XT / Navi10.
 
-Der empfohlene Miner in diesem Repository ist `excc-native-miner`. Er startet keinen lolMiner und laedt keinen lolMiner herunter. Der normale Startpfad ist jetzt GPU-only: aktuell wird ein CUDA-GPU-Solver gebaut und verwendet, CPU-Fallback ist deaktiviert.
+Der empfohlene und standardmaessig installierte Miner ist wieder `excc-amd-lolminer`, weil dieser Pfad auf HiveOS mit AMD OpenCL-GPUs tatsaechlich mined. Er nutzt lolMiner als GPU-Backend und startet keinen CPU-Solver.
 
 - Coin: `EXCC`
 - Algorithmus: `Equihash 144/5` / `EQUI144_5`
-- Backend: GPU-Solver, kein lolMiner, kein CPU-Fallback
-- Aktuelles GPU-Backend: `cuda`
-- Stratum-Submit-Format: EXCC/gominer-kompatibel
+- Backend: lolMiner OpenCL
+- GPU-Auswahl: `--devices AMD`
+- RX-5700-XT-Profil: automatische Navi10-Erkennung, `HSA_ENABLE_SDMA=0`, compact stats
+- CPU-Mining: nicht verwendet
 - Standard-Pool: `pplns.techminehub.com:6001`
 
-Wichtig: Diese native Version ist experimentell. Sie nutzt GPU, aber aktuell CUDA. Fuer AMD RX 5700 XT ist ein eigener OpenCL/HIP-Equihash-144/5-Kernel erforderlich; ohne diesen kann ein AMD-Rig nicht sinnvoll GPU-minen. CPU-Mining wird bewusst nicht mehr automatisch gestartet.
+Der experimentelle `excc-native-miner` bleibt im Repository, ist aber nicht fuer AMD RX 5700 XT geeignet, solange kein eigener AMD OpenCL/HIP-Kernel vorhanden ist.
 
 ## Schnellinstallation auf HiveOS
 
@@ -25,47 +26,39 @@ Danach in HiveOS eine Flight Sheet mit Custom Miner anlegen:
 
 | Feld | Wert |
 | --- | --- |
-| Miner | `excc-native-miner` |
+| Miner | `excc-amd-lolminer` |
 | Wallet and worker template | `%WAL%.%WORKER_NAME%` |
 | Pool URL | `pplns.techminehub.com:6001` |
 | Pass | `x` |
-| Extra config arguments | optional, z.B. `--threads 8 --range 1` |
+| Extra config arguments | leer lassen oder z.B. `--devices AMD --keepfree 0` |
 
-HiveOS muss auf dem Rig `python3`, Build-Tools und fuer das aktuelle GPU-Backend `nvcc`/CUDA haben. Ohne CUDA bricht der Miner ab, statt auf CPU auszuweichen.
+HiveOS muss die AMD OpenCL-Treiber fuer deine RX 5700 XT korrekt geladen haben. Der Miner nutzt nur GPUs, keine CPU-Mining-Threads.
 
-## Native Performance-Optimierung
+## RX 5700 XT Performance-Optimierung
 
-Der native Miner enthaelt zwei Ebenen:
+Der Miner setzt automatisch:
 
-1. `excc-gpu-solver`: GPU Equihash-144/5-Solver.
-2. `excc_native_miner.py`: eigene EXCC-Stratum-Schicht.
+- `--coin EXCC`
+- `--devices AMD`
+- `--keepfree 0`
+- `--nocolor on`
+- `--compactaccept on`
+- bei RX 5700 XT: `HSA_ENABLE_SDMA=0` und `--statsformat compact`
 
-Benchmark auf dem Rig:
-
-```bash
-cd /hive/miners/custom/excc-native-miner
-sudo ./bin/bench_native_solver.sh
-```
-
-Mehr Nonces pro Testlauf:
+Keepfree-Tuning auf dem Rig:
 
 ```bash
-sudo EXCC_NATIVE_BENCH_RANGE=4 ./bin/bench_native_solver.sh
+cd /hive/miners/custom/excc-amd-lolminer
+sudo ./bin/tune_rx5700xt.sh
 ```
 
-Mehr Threads:
+Nur OC-Empfehlungen anzeigen:
 
 ```bash
-sudo EXCC_NATIVE_THREADS=8 ./bin/bench_native_solver.sh
+./bin/tune_rx5700xt.sh --print-only
 ```
-
-### RX 5700 XT / Navi10
-
-Die aktuelle native Version nutzt noch keinen AMD-OpenCL/HIP-Kernel. RX 5700 XT profitiert daher erst dann, wenn ein OpenCL/HIP-Kernel fuer Equihash 144/5 implementiert wird. Die vorhandene RX-5700-XT-Doku bleibt fuer OC/Voltage-Startwerte nuetzlich:
 
 Details: [docs/rx5700xt-tuning.md](docs/rx5700xt-tuning.md)
-
-Der alte `excc-amd-lolminer` Wrapper ist weiterhin im Repository vorhanden, aber er ist nicht der native Miner.
 
 ## HiveOS Paket bauen
 
@@ -78,31 +71,34 @@ Lokal oder auf einem Build-System:
 Das erzeugt:
 
 ```text
-dist/excc-native-miner-0.2.0.tar.gz
 dist/excc-amd-lolminer-1.0.0.tar.gz
+dist/excc-native-miner-0.2.0.tar.gz
 ```
 
-Dieses Archiv kann auf HiveOS mit dem Custom-Miner-Mechanismus installiert werden, weil es ein Top-Level-Verzeichnis `excc-amd-lolminer/` enthaelt.
+Das AMD-Paket kann auf HiveOS mit dem Custom-Miner-Mechanismus installiert werden, weil es ein Top-Level-Verzeichnis `excc-amd-lolminer/` enthaelt.
 
 ## Konfiguration
 
-`excc-native-miner/h-config.sh` liest die HiveOS Custom-Miner-Variablen:
+`excc-amd-lolminer/h-config.sh` liest die HiveOS Custom-Miner-Variablen:
 
 - `CUSTOM_URL`: Pool, z.B. `pplns.techminehub.com:6001` oder `stratum+ssl://host:port`
 - `CUSTOM_TEMPLATE`: Wallet/Worker-Template, z.B. `%WAL%.%WORKER_NAME%`
 - `CUSTOM_PASS`: Pool-Passwort, Default `x`
-- `CUSTOM_USER_CONFIG`: zusaetzliche native Miner-Argumente
+- `CUSTOM_USER_CONFIG`: zusaetzliche lolMiner-Argumente
 
 Optionale Umgebungsvariablen:
 
-- `EXCC_NATIVE_THREADS`: Default `nproc`
-- `EXCC_NATIVE_RANGE`: Default `1`
-- `EXCC_NATIVE_SOLVER_TIMEOUT`: Default `900`
-- `EXCC_GPU_BACKEND`: Default `cuda`
-- `EXCC_CUDA_ARCH`: Default `sm_61`
-- `EXCC_GOMINER_COMMIT`: pinnt den EXCC-gominer CUDA-Solver-Commit
-- `EXCC_TROMP_COMMIT`: pinnt den Tromp-Equihash-Commit
-- `EXCC_MINER_NAME`: fuer den Installer, Default `excc-native-miner`
+- `EXCC_DEVICES`: Default `AMD`
+- `EXCC_GPU_PROFILE`: Default `auto`; erkennt RX 5700 XT/Navi10 automatisch, alternativ `rx5700xt`
+- `EXCC_API_PORT`: Default `8020`
+- `EXCC_API_HOST`: Default `127.0.0.1`
+- `EXCC_KEEPFREE`: Default `0`
+- `EXCC_SHORTSTATS`: Default `30`, bei RX 5700 XT `15`
+- `EXCC_LONGSTATS`: Default `120`, bei RX 5700 XT `60`
+- `EXCC_STATSFORMAT`: Default `default`, bei RX 5700 XT `compact`
+- `EXCC_HSA_ENABLE_SDMA`: bei RX 5700 XT Default `0`
+- `LOLMINER_VERSION`: Default `1.98a`; setze `latest`, um beim Rig-Setup den neuesten GitHub-Release zu laden
+- `EXCC_MINER_NAME`: fuer den Installer, Default `excc-amd-lolminer`
 
 ## Dateien
 

@@ -42,6 +42,8 @@ Der Wrapper setzt bereits:
 --coin EXCC --devices AMD --keepfree 0 --nocolor on --compactaccept on
 ```
 
+Damit mined lolMiner nur auf AMD-GPUs. Es werden keine CPU-Mining-Threads gestartet; die CPU wird nur fuer normale Miner-Steuerung, Pool-Kommunikation und Logging genutzt.
+
 Auf RX 5700 XT / Navi10 wird automatisch zusaetzlich ein spezielles Profil aktiv:
 
 ```text

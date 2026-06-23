@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MINER_NAME="${EXCC_MINER_NAME:-excc-native-miner}"
+MINER_NAME="${EXCC_MINER_NAME:-excc-amd-lolminer}"
 DEFAULT_REPO="Crypto-EU/Sample"
 DEFAULT_BRANCH="main"
 
@@ -76,4 +76,4 @@ echo "Create a HiveOS custom miner flight sheet with:"
 echo "  Miner name: ${MINER_NAME}"
 echo "  Wallet template: %WAL%.%WORKER_NAME%"
 echo "  Pool: pplns.techminehub.com:6001"
-echo "  Extra args: optional; native miner options, e.g. --threads 8 --range 1"
+echo "  Extra args: optional; AMD GPU options, e.g. --devices AMD --keepfree 0"

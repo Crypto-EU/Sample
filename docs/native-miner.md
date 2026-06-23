@@ -1,6 +1,6 @@
 # Nativer EXCC Miner ohne lolMiner
 
-`excc-native-miner` ist der native Miner in diesem Repository.
+`excc-native-miner` ist ein experimenteller nativer Prototyp. Er ist nicht der empfohlene Miner fuer AMD RX 5700 XT. Fuer HiveOS + AMD RX 5700 XT wird standardmaessig `excc-amd-lolminer` installiert, weil dieser Pfad AMD OpenCL-GPU-Mining nutzt und keine CPU-Solver startet.
 
 Er verwendet:
 
@@ -17,14 +17,16 @@ benoetigt. Der aktuelle GPU-Backend-Pfad ist CUDA.
 
 ## Installation auf HiveOS
 
+Der normale Installer installiert `excc-amd-lolminer`. Wenn du den experimentellen nativen Prototyp trotzdem installieren willst, musst du ihn explizit angeben:
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Crypto-EU/Sample/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Crypto-EU/Sample/main/install.sh | sudo env EXCC_MINER_NAME=excc-native-miner bash
 ```
 
-Wenn du die aktuelle Entwicklungsbranch nutzt:
+Aktuelle Entwicklungsbranch:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Crypto-EU/Sample/cursor/hiveos-excc-amd-miner-df98/install.sh | sudo env EXCC_BRANCH=cursor/hiveos-excc-amd-miner-df98 bash
+curl -fsSL https://raw.githubusercontent.com/Crypto-EU/Sample/cursor/hiveos-excc-amd-miner-df98/install.sh | sudo env EXCC_BRANCH=cursor/hiveos-excc-amd-miner-df98 EXCC_MINER_NAME=excc-native-miner bash
 ```
 
 ## Flight Sheet

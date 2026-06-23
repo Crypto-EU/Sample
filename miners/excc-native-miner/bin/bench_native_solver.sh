@@ -13,10 +13,10 @@ if [[ ! -x "$SOLVER_BIN" ]]; then
   exit 1
 fi
 
-# 192-byte synthetic EXCC-style header. The solver overwrites bytes 140..143
+# 180-byte synthetic EXCC Equihash header. The solver overwrites bytes 140..143
 # with the nonce for each round.
 HEADER_HEX="$(python3 - <<'PY'
-print("00" * 192)
+print("00" * 180)
 PY
 )"
 

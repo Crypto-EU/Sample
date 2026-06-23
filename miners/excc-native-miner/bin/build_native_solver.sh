@@ -79,7 +79,7 @@ g++ \
   -DRESTBITS=4 \
   -DWN=144 \
   -DWK=5 \
-  -DHEADERNONCELEN=192 \
+  -DHEADERNONCELEN=180 \
   -pthread \
   -I"$src_dir" \
   "${MINER_DIR}/native/excc_solver.cpp" \

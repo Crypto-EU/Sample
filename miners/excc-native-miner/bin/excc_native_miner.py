@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import argparse
 import binascii
+import hashlib
 import json
+import math
 import os
-import queue
 import random
 import socket
 import subprocess
@@ -26,7 +27,9 @@ from typing import Any, Optional
 EXCC_NONCE_OFFSET = 140
 EXCC_XNONCE_OFFSET = 144
 EXCC_XNONCE_SIZE = 12
-EXCC_WORKDATA_LEN = 192
+EXCC_EQUIHASH_HEADER_LEN = 180
+EXCC_SOLUTION_SIZE = 100
+EXCC_POW_LIMIT = (1 << 254) - 1
 
 
 @dataclass
@@ -53,10 +56,13 @@ class StratumMiner:
         self.job_version = 0
         self.stop = threading.Event()
         self.submit_ids: set[int] = set()
+        self.difficulty = 1.0
+        self.target = diff_to_target(self.difficulty)
         self.solutions = 0
         self.submitted = 0
         self.accepted = 0
         self.rejected = 0
+        self.skipped = 0
         self.started = time.time()
         self.log_lock = threading.Lock()
 
@@ -135,7 +141,9 @@ class StratumMiner:
             self.handle_notify(params)
         elif method == "mining.set_difficulty":
             diff = params[0] if params else "?"
-            self.log(f"pool difficulty set to {diff}")
+            self.difficulty = float(diff)
+            self.target = diff_to_target(self.difficulty)
+            self.log(f"pool difficulty set to {self.difficulty:g}")
         elif method == "client.get_version":
             msg_id = msg.get("id")
             if isinstance(msg_id, int):
@@ -208,7 +216,10 @@ class StratumMiner:
 
             elapsed = max(time.time() - started, 0.001)
             rate = float(self.args.range) / elapsed
-            self.log(f"native rate={rate:.6f} sol/s range={self.args.range} accepted={self.accepted} rejected={self.rejected}")
+            self.log(
+                f"native rate={rate:.6f} sol/s range={self.args.range} "
+                f"accepted={self.accepted} rejected={self.rejected} skipped={self.skipped}"
+            )
 
             if proc.returncode != 0:
                 self.log(f"solver exit={proc.returncode}: {proc.stderr.strip()[:300]}")
@@ -228,6 +239,10 @@ class StratumMiner:
                     self.log(f"ignoring unexpected solution length={len(solution_hex)}")
                     continue
                 self.solutions += 1
+                if not solution_meets_target(header_hex, nonce_hex_le, solution_hex, self.target):
+                    self.skipped += 1
+                    self.log(f"skipped low-difficulty solution job={job.job_id} nonce={nonce_hex_le} skipped={self.skipped}")
+                    continue
                 self.submit_solution(job, nonce_hex_le, solution_hex)
 
     def run(self) -> None:
@@ -257,7 +272,7 @@ def hex_to_bytes(value: str, name: str) -> bytes:
 
 
 def build_header(job: Job) -> str:
-    work = bytearray(EXCC_WORKDATA_LEN)
+    work = bytearray(EXCC_EQUIHASH_HEADER_LEN)
     pos = 0
 
     version = hex_to_bytes(job.version, "version")
@@ -283,9 +298,29 @@ def build_header(job: Job) -> str:
     work[EXCC_XNONCE_OFFSET : EXCC_XNONCE_OFFSET + EXCC_XNONCE_SIZE] = extranonce
 
     cb2 = hex_to_bytes(job.cb2, "coinbase part 2")
-    work[176 : 176 + min(len(cb2), EXCC_WORKDATA_LEN - 176)] = cb2[: EXCC_WORKDATA_LEN - 176]
+    work[176 : 176 + min(len(cb2), EXCC_EQUIHASH_HEADER_LEN - 176)] = cb2[: EXCC_EQUIHASH_HEADER_LEN - 176]
 
     return binascii.hexlify(work).decode("ascii")
+
+
+def diff_to_target(diff: float) -> int:
+    if diff < 1:
+        diff = 1
+    return EXCC_POW_LIMIT // int(math.floor(diff))
+
+
+def solution_meets_target(header_hex: str, nonce_hex_le: str, solution_hex: str, target: int) -> bool:
+    header = bytearray.fromhex(header_hex)
+    solution = bytes.fromhex(solution_hex)
+    if len(header) != EXCC_EQUIHASH_HEADER_LEN:
+        raise ValueError(f"equihash header must be {EXCC_EQUIHASH_HEADER_LEN} bytes")
+    if len(solution) != EXCC_SOLUTION_SIZE:
+        raise ValueError(f"solution must be {EXCC_SOLUTION_SIZE} bytes")
+
+    header[EXCC_NONCE_OFFSET : EXCC_NONCE_OFFSET + 4] = bytes.fromhex(nonce_hex_le)
+    digest = hashlib.sha256(bytes(header) + solution).digest()
+    hash_num = int.from_bytes(digest[::-1], "big")
+    return hash_num <= target
 
 
 def parse_args() -> argparse.Namespace:

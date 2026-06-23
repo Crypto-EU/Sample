@@ -54,6 +54,21 @@ Mehr Threads:
 sudo EXCC_NATIVE_THREADS=8 ./bin/bench_native_solver.sh
 ```
 
+## Fehler `invalid solution`
+
+EXCC Equihash nutzt fuer aktuelle Mainnet-Jobs den 180-Byte-Header ohne die
+100-Byte-Equihash-Solution. Der native Miner baut genau diesen Header und
+filtert gefundene Equihash-Loesungen lokal gegen das Pool-Difficulty-Target,
+bevor `mining.submit` gesendet wird.
+
+Wenn trotzdem Rejects auftreten, pruefe zuerst:
+
+- ob der Worker wirklich `excc-native-miner` nutzt
+- ob nach einem Update `miner restart` ausgefuehrt wurde
+- ob im Log `skipped low-difficulty solution` erscheint; das ist normal und
+  verhindert ungueltige Low-difficulty-Submits
+- ob Pool, Wallet und Workername korrekt sind
+
 ## Erwartung
 
 Diese Version ist ein echter nativer Startpunkt ohne lolMiner. Sie ist jedoch noch kein optimierter AMD-OpenCL-Miner. Fuer RX 5700 XT waere der naechste grosse Schritt ein eigener OpenCL-Kernel, der die Tromp-Bucket-Runden direkt auf Navi10 ausfuehrt.

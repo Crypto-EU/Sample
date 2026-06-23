@@ -1,7 +1,7 @@
 // Native EXCC Equihash 144/5 solver frontend.
 //
 // This frontend drives John Tromp's MIT-licensed Equihash solver with EXCC's
-// 192-byte header layout and nonce location at byte offset 140.
+// 180-byte Equihash header layout and nonce location at byte offset 140.
 
 #include <ctype.h>
 #include <errno.h>
@@ -131,7 +131,7 @@ int main(int argc, char **argv) {
     return 2;
   }
   if (header.size() <= EXCC_NONCE_OFFSET + 4) {
-    fprintf(stderr, "EXCC header must include nonce bytes at offset %u. Got %zu bytes.\n",
+    fprintf(stderr, "EXCC Equihash header must include nonce bytes at offset %u. Got %zu bytes.\n",
             EXCC_NONCE_OFFSET, header.size());
     return 2;
   }

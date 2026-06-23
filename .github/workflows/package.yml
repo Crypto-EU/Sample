@@ -1,0 +1,23 @@
+name: Package HiveOS miner
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build HiveOS custom miner package
+        run: ./build-package.sh
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: excc-amd-lolminer
+          path: dist/*.tar.gz
+          if-no-files-found: error

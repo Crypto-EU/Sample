@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MINER_NAME="excc-amd-lolminer"
+MINER_NAME="${EXCC_MINER_NAME:-excc-native-miner}"
 DEFAULT_REPO="Crypto-EU/Sample"
 DEFAULT_BRANCH="main"
 
-REPO_SLUG="${EXCC_AMD_REPO:-$DEFAULT_REPO}"
-BRANCH="${EXCC_AMD_BRANCH:-$DEFAULT_BRANCH}"
-INSTALL_ROOT="${EXCC_AMD_INSTALL_ROOT:-/hive/miners/custom}"
+REPO_SLUG="${EXCC_REPO:-${EXCC_AMD_REPO:-$DEFAULT_REPO}}"
+BRANCH="${EXCC_BRANCH:-${EXCC_AMD_BRANCH:-$DEFAULT_BRANCH}}"
+INSTALL_ROOT="${EXCC_INSTALL_ROOT:-${EXCC_AMD_INSTALL_ROOT:-/hive/miners/custom}}"
 INSTALL_DIR="${INSTALL_ROOT}/${MINER_NAME}"
 
 download() {
@@ -46,7 +46,13 @@ else
   download "$archive_url" "$archive"
   tar -xzf "$archive" -C "$tmp_dir"
 
-  source_dir="$(find "$tmp_dir" -type d -path "*/miners/${MINER_NAME}" | sed -n '1p')"
+  source_dir=""
+  for candidate in "$tmp_dir"/*/miners/"$MINER_NAME"; do
+    if [[ -d "$candidate" ]]; then
+      source_dir="$candidate"
+      break
+    fi
+  done
   if [[ -z "$source_dir" ]]; then
     echo "Could not find miners/${MINER_NAME} in downloaded repository archive." >&2
     exit 1
@@ -55,7 +61,7 @@ fi
 
 if [[ ! -d "$INSTALL_ROOT" ]]; then
   echo "HiveOS custom miner directory does not exist: $INSTALL_ROOT" >&2
-  echo "Run this installer on a HiveOS rig, or set EXCC_AMD_INSTALL_ROOT for testing." >&2
+  echo "Run this installer on a HiveOS rig, or set EXCC_INSTALL_ROOT for testing." >&2
   exit 1
 fi
 
@@ -70,4 +76,4 @@ echo "Create a HiveOS custom miner flight sheet with:"
 echo "  Miner name: ${MINER_NAME}"
 echo "  Wallet template: %WAL%.%WORKER_NAME%"
 echo "  Pool: 65.109.139.153:3052"
-echo "  Extra args: optional; AMD is selected by default via --devices AMD"
+echo "  Extra args: optional; native miner options, e.g. --threads 8 --range 1"

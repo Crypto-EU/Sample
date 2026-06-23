@@ -2,4 +2,5 @@ dist/
 miners/excc-amd-lolminer/lolminer/
 miners/excc-native-miner/build/
 miners/excc-native-miner/excc-native-solver
+miners/excc-native-miner/excc-gpu-solver
 *.log

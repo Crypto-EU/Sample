@@ -2,15 +2,16 @@
 
 HiveOS Custom Miner fuer ExchangeCoin (EXCC) mit Equihash 144/5.
 
-Der empfohlene Miner in diesem Repository ist jetzt `excc-native-miner`. Er startet keinen lolMiner und laedt keinen lolMiner herunter. Stattdessen baut er einen nativen Equihash-144/5-Solver aus offenem MIT-lizenziertem Tromp-Equihash-Code und nutzt eine eigene EXCC-Stratum-Schicht.
+Der empfohlene Miner in diesem Repository ist `excc-native-miner`. Er startet keinen lolMiner und laedt keinen lolMiner herunter. Der normale Startpfad ist jetzt GPU-only: aktuell wird ein CUDA-GPU-Solver gebaut und verwendet, CPU-Fallback ist deaktiviert.
 
 - Coin: `EXCC`
 - Algorithmus: `Equihash 144/5` / `EQUI144_5`
-- Backend: eigener nativer Solver, kein lolMiner
+- Backend: GPU-Solver, kein lolMiner, kein CPU-Fallback
+- Aktuelles GPU-Backend: `cuda`
 - Stratum-Submit-Format: EXCC/gominer-kompatibel
 - Standard-Pool: `pplns.techminehub.com:6001`
 
-Wichtig: Diese native Version ist experimentell. Sie ist offen und ohne lolMiner, aber ein performanter AMD-OpenCL-Kernel fuer Equihash 144/5 ist ein eigenstaendiges grosses Entwicklungsprojekt. Die aktuelle native Version priorisiert Korrektheit, Transparenz und Erweiterbarkeit; sie wird nicht automatisch schneller sein als ein jahrelang optimierter Closed-Source-Miner.
+Wichtig: Diese native Version ist experimentell. Sie nutzt GPU, aber aktuell CUDA. Fuer AMD RX 5700 XT ist ein eigener OpenCL/HIP-Equihash-144/5-Kernel erforderlich; ohne diesen kann ein AMD-Rig nicht sinnvoll GPU-minen. CPU-Mining wird bewusst nicht mehr automatisch gestartet.
 
 ## Schnellinstallation auf HiveOS
 
@@ -30,13 +31,13 @@ Danach in HiveOS eine Flight Sheet mit Custom Miner anlegen:
 | Pass | `x` |
 | Extra config arguments | optional, z.B. `--threads 8 --range 1` |
 
-HiveOS muss auf dem Rig `python3`, `g++`, `make`/Build-Tools und eine funktionierende Linux-Umgebung zum Kompilieren haben. Wenn `g++` fehlt, muss der Solver auf einem anderen Linux-Host gebaut oder die HiveOS-Umgebung erweitert werden.
+HiveOS muss auf dem Rig `python3`, Build-Tools und fuer das aktuelle GPU-Backend `nvcc`/CUDA haben. Ohne CUDA bricht der Miner ab, statt auf CPU auszuweichen.
 
 ## Native Performance-Optimierung
 
 Der native Miner enthaelt zwei Ebenen:
 
-1. `excc-native-solver`: nativer Equihash-144/5-Solver.
+1. `excc-gpu-solver`: GPU Equihash-144/5-Solver.
 2. `excc_native_miner.py`: eigene EXCC-Stratum-Schicht.
 
 Benchmark auf dem Rig:
@@ -60,7 +61,7 @@ sudo EXCC_NATIVE_THREADS=8 ./bin/bench_native_solver.sh
 
 ### RX 5700 XT / Navi10
 
-Die aktuelle native Version nutzt noch keinen AMD-OpenCL-Kernel. RX 5700 XT profitiert daher erst dann deutlich, wenn ein OpenCL-Kernel fuer Equihash 144/5 implementiert wird. Die vorhandene RX-5700-XT-Doku bleibt fuer OC/Voltage-Startwerte nuetzlich:
+Die aktuelle native Version nutzt noch keinen AMD-OpenCL/HIP-Kernel. RX 5700 XT profitiert daher erst dann, wenn ein OpenCL/HIP-Kernel fuer Equihash 144/5 implementiert wird. Die vorhandene RX-5700-XT-Doku bleibt fuer OC/Voltage-Startwerte nuetzlich:
 
 Details: [docs/rx5700xt-tuning.md](docs/rx5700xt-tuning.md)
 
@@ -77,7 +78,7 @@ Lokal oder auf einem Build-System:
 Das erzeugt:
 
 ```text
-dist/excc-native-miner-0.1.0.tar.gz
+dist/excc-native-miner-0.2.0.tar.gz
 dist/excc-amd-lolminer-1.0.0.tar.gz
 ```
 
@@ -97,6 +98,9 @@ Optionale Umgebungsvariablen:
 - `EXCC_NATIVE_THREADS`: Default `nproc`
 - `EXCC_NATIVE_RANGE`: Default `1`
 - `EXCC_NATIVE_SOLVER_TIMEOUT`: Default `900`
+- `EXCC_GPU_BACKEND`: Default `cuda`
+- `EXCC_CUDA_ARCH`: Default `sm_61`
+- `EXCC_GOMINER_COMMIT`: pinnt den EXCC-gominer CUDA-Solver-Commit
 - `EXCC_TROMP_COMMIT`: pinnt den Tromp-Equihash-Commit
 - `EXCC_MINER_NAME`: fuer den Installer, Default `excc-native-miner`
 
@@ -117,6 +121,7 @@ miners/excc-native-miner/
   h-run.sh
   h-stats.sh
   native/excc_solver.cpp
+  bin/build_gpu_solver.sh
   bin/build_native_solver.sh
   bin/bench_native_solver.sh
   bin/excc_native_miner.py

@@ -6,10 +6,14 @@ Er verwendet:
 
 - eigene HiveOS-Hooks
 - eigene Python-Stratum-Schicht
-- eigenen C++ Solver-Frontend-Code
-- Tromp Equihash als MIT-lizenzierte Solver-Basis
+- GPU-Solver-Backend
+- aktuell CUDA mit EXCC-gominer GPU-Solver-Quelle zur Buildzeit
 - keinen lolMiner-Download
 - keinen lolMiner-Prozess
+- keinen CPU-Fallback
+
+Wichtig: Fuer AMD RX 5700 XT wird noch ein eigener OpenCL/HIP-Backend-Kernel
+benoetigt. Der aktuelle GPU-Backend-Pfad ist CUDA.
 
 ## Installation auf HiveOS
 
@@ -41,17 +45,17 @@ Beispiele fuer Extra config arguments:
 --threads 8 --range 1
 ```
 
-## Benchmark
+## GPU Benchmark
 
 ```bash
 cd /hive/miners/custom/excc-native-miner
 sudo ./bin/bench_native_solver.sh
 ```
 
-Mehr Threads:
+CUDA-Architektur fuer den Build anpassen:
 
 ```bash
-sudo EXCC_NATIVE_THREADS=8 ./bin/bench_native_solver.sh
+sudo EXCC_CUDA_ARCH=sm_75 ./bin/bench_native_solver.sh
 ```
 
 ## Fehler `invalid solution`
@@ -71,13 +75,14 @@ Wenn trotzdem Rejects auftreten, pruefe zuerst:
 
 ## Erwartung
 
-Diese Version ist ein echter nativer Startpunkt ohne lolMiner. Sie ist jedoch noch kein optimierter AMD-OpenCL-Miner. Fuer RX 5700 XT waere der naechste grosse Schritt ein eigener OpenCL-Kernel, der die Tromp-Bucket-Runden direkt auf Navi10 ausfuehrt.
+Diese Version ist ein echter GPU-Startpunkt ohne lolMiner. Sie ist jedoch noch kein optimierter AMD-OpenCL-Miner. Fuer RX 5700 XT waere der naechste grosse Schritt ein eigener OpenCL/HIP-Kernel, der die Equihash-Bucket-Runden direkt auf Navi10 ausfuehrt.
 
 Die native Version ist deshalb vor allem:
 
 - transparent
 - auditierbar
 - ohne Closed-Source-Miner
-- geeignet als Basis fuer weitere GPU-Kernel-Optimierung
+- GPU-only im normalen Startpfad
+- geeignet als Basis fuer weitere AMD-GPU-Kernel-Optimierung
 
-Sie wird nicht automatisch eine wesentlich hoehere Hashrate liefern als ausgereifte Closed-Source-Miner.
+Sie wird auf AMD erst dann eine sinnvolle Hashrate liefern, wenn der OpenCL/HIP-Backend-Kernel implementiert ist. Auf Systemen ohne unterstuetztes GPU-Backend bricht sie ab, statt CPU zu minen.

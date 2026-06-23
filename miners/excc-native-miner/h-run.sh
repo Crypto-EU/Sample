@@ -17,11 +17,23 @@ fi
 
 mkdir -p "$(dirname "$CUSTOM_LOG_BASENAME")"
 
-./bin/build_native_solver.sh
+gpu_backend="${EXCC_GPU_BACKEND:-cuda}"
 
-SOLVER_BIN="${PWD}/excc-native-solver"
+case "$gpu_backend" in
+  cuda)
+    ./bin/build_gpu_solver.sh
+    SOLVER_BIN="${PWD}/excc-gpu-solver"
+    ;;
+  *)
+    echo "Unsupported GPU backend: $gpu_backend" >&2
+    echo "Supported backend today: cuda" >&2
+    echo "AMD RX 5700 XT requires a future OpenCL/HIP backend; CPU fallback is disabled." >&2
+    exit 1
+    ;;
+esac
+
 if [[ ! -x "$SOLVER_BIN" ]]; then
-  echo "Native solver is missing or not executable: $SOLVER_BIN" >&2
+  echo "GPU solver is missing or not executable: $SOLVER_BIN" >&2
   exit 1
 fi
 
@@ -50,7 +62,7 @@ if [[ -n "${EXTRA_ARGS:-}" ]]; then
 fi
 
 echo "Starting native EXCC miner..."
-echo "Backend: native Tromp Equihash 144/5 solver, no lolMiner"
+echo "Backend: GPU ${gpu_backend} Equihash 144/5 solver, no lolMiner, no CPU fallback"
 echo "Log file: $log_file"
 printf 'Command: python3 ./bin/excc_native_miner.py'
 printf ' %q' "${args[@]}"

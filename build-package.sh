@@ -27,6 +27,7 @@ package_miner() {
     --exclude="${miner_name}/lolminer" \
     --exclude="${miner_name}/build" \
     --exclude="${miner_name}/excc-native-solver" \
+    --exclude="${miner_name}/excc-gpu-solver" \
     --exclude="${miner_name}/*.log" \
     -C "${ROOT_DIR}/miners" \
     -czf "$package" \

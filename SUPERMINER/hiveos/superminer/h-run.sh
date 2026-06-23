@@ -10,6 +10,9 @@ export HSA_OVERRIDE_GFX_VERSION="${HSA_OVERRIDE_GFX_VERSION:-10.3.0}"
 
 # Bundled miner + ROCm/HIP libs must resolve from the install directory.
 export LD_LIBRARY_PATH="$(pwd):${LD_LIBRARY_PATH:-}"
+if [[ -d /opt/rocm/lib ]]; then
+  export LD_LIBRARY_PATH="/opt/rocm/lib:${LD_LIBRARY_PATH}"
+fi
 
 if [[ -d ./rocm/lib ]]; then
   export LD_LIBRARY_PATH="./rocm/lib:${LD_LIBRARY_PATH}"
@@ -22,7 +25,7 @@ if [[ -x ./superminer ]]; then
 fi
 
 if [[ ! -f ./libpearl_gemm_capi.so ]]; then
-  echo "ERROR: libpearl_gemm_capi.so missing — reinstall SUPERMINER 1.0.1+ package"
+  echo "ERROR: libpearl_gemm_capi.so missing — reinstall SUPERMINER 1.1.0+ package"
   exit 1
 fi
 

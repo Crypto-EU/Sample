@@ -27,7 +27,7 @@ class StratumClient {
   StratumClient(MiningConfig cfg);
   ~StratumClient();
 
-  void set_job_callback(JobCallback cb) { job_cb_ = std::move(cb); }
+  void set_job_callback(JobCallback cb);
   void set_share_result_callback(ShareResultCallback cb) { share_cb_ = std::move(cb); }
 
   bool connect();
@@ -48,7 +48,10 @@ class StratumClient {
   bool pearl_v1_ = false;
   double last_difficulty_ = 32;
   std::string extranonce1_;
+  StratumJob current_job_;
+  uint64_t job_generation_ = 0;
 
+  void dispatch_job_if_ready();
   bool write_line(const std::string& line);
   std::string read_line();
   bool handshake();

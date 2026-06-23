@@ -88,6 +88,23 @@ StratumClient::StratumClient(MiningConfig cfg) : cfg_(std::move(cfg)) {}
 
 StratumClient::~StratumClient() { disconnect(); }
 
+void StratumClient::set_job_callback(JobCallback cb) {
+  job_cb_ = std::move(cb);
+  dispatch_job_if_ready();
+}
+
+void StratumClient::dispatch_job_if_ready() {
+  if (!job_cb_ || current_job_.sigma.empty()) {
+    return;
+  }
+  log_info("stratum job gen=%llu id=%s m=%d n=%d k=%d r=%d sigma=%zuB b_seed=%zuB key=%zuB",
+           static_cast<unsigned long long>(job_generation_),
+           current_job_.job_id.empty() ? "-" : current_job_.job_id.c_str(), current_job_.m,
+           current_job_.n, current_job_.k, current_job_.r, current_job_.sigma.size(),
+           current_job_.b_seed.size(), current_job_.job_key.size());
+  job_cb_(current_job_);
+}
+
 bool StratumClient::connect() {
   struct addrinfo hints {};
   hints.ai_family = AF_UNSPEC;
@@ -117,6 +134,10 @@ bool StratumClient::connect() {
   }
   int one = 1;
   setsockopt(sock_, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+  struct timeval rcv_to {};
+  rcv_to.tv_sec = 30;
+  rcv_to.tv_usec = 0;
+  setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, &rcv_to, sizeof(rcv_to));
   running_ = true;
   if (!handshake()) {
     disconnect();
@@ -209,6 +230,8 @@ bool StratumClient::handshake() {
     }
     write_line("{\"id\":" + std::to_string(req_id_++) +
                ",\"method\":\"mining.configure\",\"params\":[[\"pearl/v1\"],{}]}");
+  } else if (!first.empty()) {
+    handle_line(first);
   }
 
   write_line("{\"id\":" + std::to_string(req_id_++) +
@@ -265,13 +288,12 @@ void StratumClient::handle_line(const std::string& line) {
     parse_set_difficulty(line);
     return;
   }
-  if (line.find("pearl.set_mining_params") != std::string::npos ||
-      line.find("mining.notify") != std::string::npos) {
-    if (line.find("mining.notify") != std::string::npos) {
-      parse_notify(line);
-    } else {
-      parse_set_mining_params(line);
-    }
+  if (line.find("pearl.set_mining_params") != std::string::npos) {
+    parse_set_mining_params(line);
+    return;
+  }
+  if (line.find("mining.notify") != std::string::npos) {
+    parse_notify(line);
     return;
   }
   if (line.find("\"error\"") != std::string::npos && line.find("mining.submit") != std::string::npos) {
@@ -296,50 +318,60 @@ void StratumClient::parse_set_difficulty(const std::string& line) {
 }
 
 void StratumClient::parse_set_mining_params(const std::string& line) {
-  StratumJob job;
-  job.difficulty = static_cast<uint32_t>(last_difficulty_);
-  job.target = difficulty_to_target(last_difficulty_);
-  job.m = extract_json_int(line, "m");
-  job.n = extract_json_int(line, "n");
-  job.k = extract_json_int(line, "k");
-  job.r = extract_json_int(line, "r");
-  if (job.r <= 0) {
-    job.r = 256;
+  current_job_.difficulty = static_cast<uint32_t>(last_difficulty_);
+  current_job_.target = difficulty_to_target(last_difficulty_);
+  const int m = extract_json_int(line, "m");
+  const int n = extract_json_int(line, "n");
+  const int k = extract_json_int(line, "k");
+  const int r = extract_json_int(line, "r");
+  if (m > 0) {
+    current_job_.m = m;
+  }
+  if (n > 0) {
+    current_job_.n = n;
+  }
+  if (k > 0) {
+    current_job_.k = k;
+  }
+  if (r > 0) {
+    current_job_.r = r;
+  } else if (current_job_.r <= 0) {
+    current_job_.r = 256;
   }
   const auto sigma_hex = extract_json_string(line, "sigma");
   if (!sigma_hex.empty()) {
-    job.sigma = hex_to_bytes(sigma_hex);
+    current_job_.sigma = hex_to_bytes(sigma_hex);
   }
   const auto bseed_hex = extract_json_string(line, "b_seed");
   if (!bseed_hex.empty()) {
-    job.b_seed = hex_to_bytes(bseed_hex);
+    current_job_.b_seed = hex_to_bytes(bseed_hex);
   }
   const auto key_hex = extract_json_string(line, "key");
   if (!key_hex.empty()) {
-    job.job_key = hex_to_bytes(key_hex);
+    current_job_.job_key = hex_to_bytes(key_hex);
   }
-  if (job_cb_ && !job.sigma.empty()) {
-    job_cb_(job);
+  if (!current_job_.sigma.empty()) {
+    ++job_generation_;
+    dispatch_job_if_ready();
   }
 }
 
 void StratumClient::parse_notify(const std::string& line) {
-  StratumJob job;
-  job.difficulty = static_cast<uint32_t>(last_difficulty_);
-  job.target = difficulty_to_target(last_difficulty_);
+  current_job_.difficulty = static_cast<uint32_t>(last_difficulty_);
+  current_job_.target = difficulty_to_target(last_difficulty_);
   auto pos = line.find('[');
   if (pos == std::string::npos) {
     return;
   }
   std::string arr = line.substr(pos);
-  // positional: [job_id, prev_hash, header/coinbase, height, ...]
   auto q1 = arr.find('"');
   auto q2 = arr.find('"', q1 + 1);
   if (q1 != std::string::npos && q2 != std::string::npos) {
-    job.job_id = arr.substr(q1 + 1, q2 - q1 - 1);
+    current_job_.job_id = arr.substr(q1 + 1, q2 - q1 - 1);
   }
-  if (job_cb_) {
-    job_cb_(job);
+  if (!current_job_.sigma.empty()) {
+    ++job_generation_;
+    dispatch_job_if_ready();
   }
 }
 

@@ -210,8 +210,9 @@ int pearl_capi_iter(void* ws, uint64_t seed_lo, void* host_signal_header_pinned,
   pearl_capi_noise_gen(r, m, n, k, p.EAL, p.EAL_fp16, p.EAR_R_major, p.EAR_K_major, nullptr,
                        nullptr, nullptr, nullptr, (const uint8_t*)p.CommitA, nullptr, stream);
   {
-    dim3 g((k / 16) * (m / 16));
-    hipLaunchKernelGGL(pk10::k_wmma_gemm, g, dim3(256), 0, s, (const int8_t*)p.EAL,
+    dim3 g((k / 16), (m / 16));
+    dim3 b(16, 16);
+    hipLaunchKernelGGL(pk10::k_wmma_gemm, g, b, 0, s, (const int8_t*)p.EAL,
                        (const int8_t*)p.EAR_K_major, w->gemmScratch, m, k, r);
   }
   hipLaunchKernelGGL(pk::k_add_i8, dim3((m * k + 255) / 256), dim3(256), 0, s, (const int8_t*)p.A,
@@ -222,10 +223,11 @@ int pearl_capi_iter(void* ws, uint64_t seed_lo, void* host_signal_header_pinned,
     int nt = w->ntiles;
     hipLaunchKernelGGL(pk10::k_tgemm_pow, dim3((nt + 255) / 256), dim3(256), 0, s,
                        (const int8_t*)p.ApEA, w->Bn, m, n, k, r, (const u32*)p.pow_key,
-                       (const u32*)p.pow_target, (int*)p.host_signal_sync);
+                       (const u32*)p.pow_target, (int*)p.host_signal_sync, w->dHeader);
   }
-  if (host_signal_header_pinned)
+  if (host_signal_header_pinned) {
     hipMemcpyAsync(host_signal_header_pinned, w->dHeader, 640, hipMemcpyDeviceToHost, s);
+  }
   return rc_ok(hipGetLastError());
 }
 int pearl_capi_iter_batch(void* ws, uint64_t seed_lo_start, void* const* hdrs, int32_t count,
@@ -252,8 +254,9 @@ int pearl_capi_noise_B(const PearlCapiNoiseBParams* p, void* stream) {
   hipLaunchKernelGGL(pk::k_transpose_i8, dim3((n * r + 255) / 256), dim3(256), 0, s, (const int8_t*)p->EBR,
                      EBRt, n, r);
   {
-    dim3 g((k / 16) * (n / 16));
-    hipLaunchKernelGGL(pk10::k_wmma_gemm, g, dim3(256), 0, s, (const int8_t*)p->EBL_R_major, EBRt, EB, k,
+    dim3 g((n / 16), (k / 16));
+    dim3 b(16, 16);
+    hipLaunchKernelGGL(pk10::k_wmma_gemm, g, b, 0, s, (const int8_t*)p->EBL_R_major, EBRt, EB, k,
                        n, r);
   }
   hipLaunchKernelGGL(pk::k_transpose_i8, dim3((n * k + 255) / 256), dim3(256), 0, s, (const int8_t*)p->B,

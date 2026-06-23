@@ -47,7 +47,8 @@ struct HipRt {
   hipHostFreeFn host_free = nullptr;
 
   bool load() {
-    const char* paths[] = {"libamdhip64.so.6", "libamdhip64.so", nullptr};
+    const char* paths[] = {"/opt/rocm/lib/libamdhip64.so.6", "/opt/rocm-6.4.3/lib/libamdhip64.so.6",
+                           "libamdhip64.so.6", "libamdhip64.so", nullptr};
     for (const char** p = paths; *p; ++p) {
       lib = dlopen(*p, RTLD_LAZY | RTLD_GLOBAL);
       if (lib) {
@@ -147,9 +148,15 @@ void GpuWorker::on_job(const StratumJob& job) {
   current_job_ = job;
   if (job.m > 0) {
     profile_.m = job.m;
+  }
+  if (job.n > 0) {
     profile_.n = job.n;
+  }
+  if (job.k > 0) {
     profile_.k = job.k;
-    profile_.r = job.r > 0 ? job.r : profile_.r;
+  }
+  if (job.r > 0) {
+    profile_.r = job.r;
   }
   job_ready_.store(true);
   job_seq_.fetch_add(1);
@@ -320,18 +327,23 @@ bool GpuWorker::install_sigma(const StratumJob& job, void* workspace, void* stre
     return false;
   }
 
+  if (job.b_seed.size() < 32) {
+    log_error("GPU %d: pool job missing 32-byte b_seed", device_id_);
+    return false;
+  }
+
   PearlCapiInstallBParams ib{};
   ib.m = m;
   ib.n = n;
   ib.k = k;
   ib.r = r;
-  ib.expand_bseed = job.b_seed.empty() ? 0 : 1;
+  ib.expand_bseed = 1;
   ib.th_num_blocks = th_blocks;
   ib.th_threads = th_threads;
   ib.th_stages = th_stages;
   ib.th_leaves = th_leaves;
   ib.device_id = device_id_;
-  ib.bseed = job.b_seed.empty() ? nullptr : job.b_seed.data();
+  ib.bseed = job.b_seed.data();
   ib.B = d_B_;
   ib.BHash = d_B_hash_;
   ib.Key = d_key_;
@@ -404,27 +416,62 @@ bool GpuWorker::install_sigma(const StratumJob& job, void* workspace, void* stre
 
 bool GpuWorker::run_batch(void* workspace, void* stream, uint64_t seed_start, int count) {
   auto iter_fn = reinterpret_cast<decltype(&pearl_capi_iter)>(load_sym(gemm_lib_, "pearl_capi_iter"));
+  auto iter_batch = reinterpret_cast<decltype(&pearl_capi_iter_batch)>(
+      load_sym(gemm_lib_, "pearl_capi_iter_batch"));
+  auto memset_fn = reinterpret_cast<hipError_t (*)(void*, int, size_t, void*)>(
+      dlsym(hip_lib_, "hipMemsetAsync"));
   HipRt hip = hip_from_lib(hip_lib_);
-  if (!iter_fn || !hip.stream_sync) {
+  if (!iter_fn || !hip.stream_sync || !hip.memcpy_fn) {
     return false;
   }
 
+  if (memset_fn) {
+    memset_fn(d_host_signal_, 0, 8, stream);
+  }
+
+  int rc = 0;
+  if (iter_batch && count > 1) {
+    rc = iter_batch(workspace, seed_start, nullptr, count, stream);
+  } else {
+    for (int i = 0; i < count; ++i) {
+      rc = iter_fn(workspace, seed_start + static_cast<uint64_t>(i), nullptr, stream);
+      if (rc != 0) {
+        break;
+      }
+    }
+  }
+  if (rc != 0) {
+    log_error("GPU %d: pearl_capi_iter rc=%d", device_id_, rc);
+    return false;
+  }
+  hip.stream_sync(stream);
+
+  int32_t sig = 0;
+  hip.memcpy_fn(&sig, d_host_signal_, sizeof(sig), hipMemcpyDeviceToHost);
+  if (sig == 0) {
+    return true;
+  }
+
+  StratumJob job;
+  {
+    std::lock_guard<std::mutex> lock(job_mutex_);
+    job = current_job_;
+  }
+
   for (int i = 0; i < count; ++i) {
+    const uint64_t nonce = seed_start + static_cast<uint64_t>(i);
+    if (memset_fn) {
+      memset_fn(d_host_signal_, 0, 8, stream);
+    }
     std::memset(h_header_, 0, 640);
-    int rc = iter_fn(workspace, seed_start + static_cast<uint64_t>(i), h_header_, stream);
+    rc = iter_fn(workspace, nonce, h_header_, stream);
     if (rc != 0) {
-      log_error("GPU %d: pearl_capi_iter rc=%d", device_id_, rc);
       return false;
     }
     hip.stream_sync(stream);
     if (static_cast<uint8_t*>(h_header_)[0] == 1) {
-      StratumJob job;
-      {
-        std::lock_guard<std::mutex> lock(job_mutex_);
-        job = current_job_;
-      }
-      handle_hit(job, h_header_, seed_start + static_cast<uint64_t>(i), profile_.m, profile_.n,
-                 profile_.k, profile_.r, stream);
+      handle_hit(job, h_header_, nonce, profile_.m, profile_.n, profile_.k, profile_.r, stream);
+      break;
     }
   }
   return true;
@@ -519,9 +566,15 @@ void GpuWorker::mining_loop() {
   uint64_t nonce = static_cast<uint64_t>(device_id_) << 48;
   auto t0 = std::chrono::steady_clock::now();
   uint64_t attempts = 0;
+  auto wait_log = std::chrono::steady_clock::now();
 
   while (running_) {
     if (!job_ready_.load()) {
+      auto now = std::chrono::steady_clock::now();
+      if (std::chrono::duration<double>(now - wait_log).count() >= 30.0) {
+        log_info("GPU %d: waiting for pearl.set_mining_params from pool...", device_id_);
+        wait_log = now;
+      }
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
       continue;
     }
@@ -661,22 +714,26 @@ int MinerApp::run() {
   pool_->set_share_result_callback([](bool ok, const std::string& reason) {
     log_info("share %s (%s)", ok ? "accepted" : "rejected", reason.c_str());
   });
-  if (!pool_->connect()) {
-    return 1;
-  }
 
   std::vector<GpuWorker*> worker_ptrs;
   for (size_t i = 0; i < profiles.size(); ++i) {
     workers_.push_back(std::make_unique<GpuWorker>(static_cast<int>(i), profiles[i], pool_.get(),
                                                    cfg_.batch_size));
     worker_ptrs.push_back(workers_.back().get());
-    workers_.back()->start();
   }
   pool_->set_job_callback([worker_ptrs](const StratumJob& job) {
     for (auto* w : worker_ptrs) {
       w->on_job(job);
     }
   });
+
+  if (!pool_->connect()) {
+    return 1;
+  }
+
+  for (auto& w : workers_) {
+    w->start();
+  }
 
   running_ = true;
   start_stats_exporter();

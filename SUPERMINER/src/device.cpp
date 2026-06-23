@@ -16,9 +16,14 @@ static GpuProfile profile_for_arch(const std::string& arch, const std::string& n
   if (arch.find("gfx11") != std::string::npos || arch.find("gfx12") != std::string::npos) {
     return {name, arch, 4096, 65536, 4096, 256, 128, 128, 32, true};
   }
-  // RDNA2
+  // RDNA2 — scale N to VRAM (16GB → 32768, 20GB+ → 65536)
   if (arch.find("gfx10") != std::string::npos) {
-    return {name, arch, 4096, 32768, 4096, 256, 128, 128, 32, true};
+    int n = 32768;
+    const char* env_n = std::getenv("SUPERMINER_N");
+    if (env_n && env_n[0]) {
+      n = std::atoi(env_n);
+    }
+    return {name, arch, 4096, n, 4096, 256, 128, 128, 32, true};
   }
   return {name, arch, 4096, 32768, 4096, 256, 128, 128, 32, true};
 }

@@ -6,8 +6,8 @@
 
 namespace sm {
 
-constexpr const char* kVersion = "SUPERMINER-1.0.1";
-constexpr const char* kAgent = "SUPERMINER/1.0.1";
+constexpr const char* kVersion = "SUPERMINER-1.1.0";
+constexpr const char* kAgent = "SUPERMINER/1.1.0";
 
 struct GpuProfile {
   std::string name;
@@ -27,7 +27,7 @@ struct MiningConfig {
   long requested_diff = 0;
   std::vector<int> devices;
   int m = 0, n = 0, k = 0, r = 256;
-  int batch_size = 8;
+  int batch_size = 32;
   bool disable_pong = false;
 };
 

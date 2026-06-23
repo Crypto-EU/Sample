@@ -59,7 +59,7 @@ SUPERMINER ist ein Open-Source-Miner für **Pearl / Pearlhash** auf **AMD-GPUs**
 | Coin | PEARL |
 | Miner | **Custom** |
 | Miner name | `superminer` |
-| Installation URL | `https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.1/superminer-hiveos-1.1.0.tar.gz` |
+| Installation URL | `https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.1/superminer-hiveos-1.1.1.tar.gz` |
 | Pool | `pool.pearlhash.xyz:9000` |
 | Wallet | `%WAL%` |
 | Pass | `x` oder `x;d=65536` (feste Schwierigkeit) |
@@ -85,7 +85,7 @@ HiveOS lädt das Paket beim ersten Start automatisch. Manuell per Shell:
 
 ```bash
 /hive/miners/custom/custom-get \
-  https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.1/superminer-hiveos-1.1.0.tar.gz \
+  https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.1/superminer-hiveos-1.1.1.tar.gz \
   -f
 ```
 
@@ -243,7 +243,7 @@ Auf Consumer-AMD (RX 6000/7000) ist **WildRig Multi** derzeit oft schneller als 
 
 ```bash
 /hive/miners/custom/custom-get \
-  https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.1/superminer-hiveos-1.1.0.tar.gz \
+  https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.1/superminer-hiveos-1.1.1.tar.gz \
   -f
 ```
 
@@ -304,7 +304,7 @@ In HiveOS Extra Config oder als Rig-Variable setzen.
 
 | Datei | URL |
 |---|---|
-| **HiveOS-Paket (tar.gz)** | https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.1/superminer-hiveos-1.1.0.tar.gz |
+| **HiveOS-Paket (tar.gz)** | https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.1/superminer-hiveos-1.1.1.tar.gz |
 | **Flight Sheet JSON** | https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.1/superminer-pearlhash-flightsheet.json |
 | **Quellcode** | https://github.com/Crypto-EU/Sample/tree/cursor/superminer-amd-df71/SUPERMINER |
 | **Issues / Support** | https://github.com/Crypto-EU/Sample/issues |

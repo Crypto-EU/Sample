@@ -1,44 +1,35 @@
 # HiveOS — SUPERMINER Pearlhash
 
-## Schnellstart
+Deutsche Vollanleitung: **[docs/ANLEITUNG-DE.md](../docs/ANLEITUNG-DE.md)**
+
+## Schnellstart (v1.1.0)
 
 ### 1. Flight Sheet importieren
 
-Lade die JSON-Datei herunter und importiere sie in HiveOS:
+https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.0/superminer-pearlhash-flightsheet.json
 
-**Download:**
-https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.0.0/superminer-pearlhash-flightsheet.json
+HiveOS → **Flight Sheets** → **Import** → Wallet zuweisen.
 
-Im Hive-Dashboard: **Flight Sheets** → **Import** → JSON einfügen oder Datei hochladen.
+### 2. Extra Config (RX 6800 XT)
 
-> Nach dem Import: Wallet (`wal_id`) im Flight Sheet deiner Pearl-Wallet (`prl1…`) zuweisen.
+```
+HSA_OVERRIDE_GFX_VERSION=10.3.0 --devices 0 --batch 32
+```
 
-### 2. Miner-Paket (automatisch)
+### 3. Miner-Paket
 
-HiveOS lädt den Miner von dieser URL:
-
-https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.0.0/superminer-hiveos-1.0.0.tar.gz
-
-Manuell per Shell:
+Automatisch via Flight Sheet, oder manuell:
 
 ```bash
-/hive/miners/custom/custom-get https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.0.0/superminer-hiveos-1.0.0.tar.gz -f
+/hive/miners/custom/custom-get \
+  https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.0/superminer-hiveos-1.1.0.tar.gz \
+  -f
 ```
 
-### 3. RX 6800 XT / RDNA2
+### 4. Log prüfen
 
-Optional in **Extra config arguments** (bereits in der JSON für eine GPU):
-
-```
---devices 0 --batch 8
+```bash
+tail -f /var/log/miner/custom/superminer.log
 ```
 
-Bei ROCm-Erkennungsproblemen Rig-Variable setzen:
-
-```
-HSA_OVERRIDE_GFX_VERSION=10.3.0
-```
-
-## Flight Sheet JSON (Kopieren)
-
-Siehe `superminer-pearlhash-flightsheet.json` in diesem Ordner.
+Erwartung: `self-test: OK` → `sigma installed` → Hashrate > 0

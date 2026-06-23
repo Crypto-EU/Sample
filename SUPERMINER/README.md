@@ -46,6 +46,8 @@ cd Sample/SUPERMINER
 
 ## HiveOS setup
 
+**Deutsche Anleitung:** [docs/ANLEITUNG-DE.md](docs/ANLEITUNG-DE.md)
+
 1. Create a **Wallet** with coin **PEARL** and your `prl1…` address.
 2. Create a **Flight Sheet** → Miner: **Custom**
 3. Fill in:
@@ -53,20 +55,17 @@ cd Sample/SUPERMINER
 | Field | Value |
 |---|---|
 | **Miner name** | `superminer` |
-| **Installation URL** | `https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.0.0/superminer-hiveos-1.0.0.tar.gz` |
+| **Installation URL** | `https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.0/superminer-hiveos-1.1.0.tar.gz` |
 | **Pool URL** | `pool.pearlhash.xyz:9000` |
 | **Wallet template** | `%WAL%` |
 | **Pass** | `x` or `x;d=65536` for static difficulty |
+| **Extra config** | `HSA_OVERRIDE_GFX_VERSION=10.3.0 --devices 0 --batch 32` |
 
 4. Apply the flight sheet to your AMD rigs and start mining.
 
 Example flight sheet JSON (Pearlhash pool) — **download or import**:
 
-https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.0.0/superminer-pearlhash-flightsheet.json
-
-```json
-{"name":"SUPERMINER-Pearlhash-AMD","isFavorite":true,"items":[{"coin":"PEARL","pool_ssl":false,"wal_id":0,"dpool_ssl":false,"miner":"custom","miner_alt":"superminer","miner_config":{"url":"pool.pearlhash.xyz:9000","algo":"pearlhash","miner":"superminer","template":"%WAL%","install_url":"https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.0.0/superminer-hiveos-1.0.0.tar.gz","user_config":"--devices 0 --batch 8"},"pool_geo":[]}]}
-```
+https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.1.0/superminer-pearlhash-flightsheet.json
 
 ## CLI reference
 
@@ -79,7 +78,7 @@ superminer --pearl-mine [options]
   --password PW        Stratum password (use x;d=N for static diff)
   --devices LIST       all or 0,1,2,...
   --pearl-m/n/k/r N    Override auto-tuned matrix shape
-  --batch N            GPU batch size (default 8)
+  --batch N            GPU batch size (default 32)
   --list-devices       Show detected AMD GPUs
 ```
 

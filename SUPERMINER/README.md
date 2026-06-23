@@ -53,7 +53,7 @@ cd SUPERMINER
 | Field | Value |
 |---|---|
 | **Miner name** | `superminer` |
-| **Installation URL** | `https://github.com/Crypto-EU/SUPERMINER/releases/download/v1.0.0/superminer-hiveos-1.0.0.tar.gz` |
+| **Installation URL** | `https://github.com/Crypto-EU/Sample/releases/download/superminer-v1.0.0/superminer-hiveos-1.0.0.tar.gz` |
 | **Pool URL** | `pool.pearlhash.xyz:9000` |
 | **Wallet template** | `%WAL%` |
 | **Pass** | `x` or `x;d=65536` for static difficulty |

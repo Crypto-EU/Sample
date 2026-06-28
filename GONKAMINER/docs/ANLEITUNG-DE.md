@@ -1,9 +1,8 @@
 # GONKAMINER — Deutsche Anleitung (HiveOS / AMD)
 
-**GONKAMINER v0.1.3** — Community-PoC-Worker für das [Gonka](https://gonka.ai)-Netzwerk auf **AMD-GPUs** unter HiveOS.
+**GONKAMINER v0.2.0** — Community-PoC-Worker für das [Gonka](https://gonka.ai)-Netzwerk auf **AMD-GPUs** unter HiveOS.
 
-> **Miner lädt nicht / Ordner existiert nicht?**  
-> → **[Manuelle Shell-Installation](INSTALL-HIVEOS-SHELL-DE.md)** (Schritt-für-Schritt, copy & paste)
+> **Alles auf einmal:** [INSTALL-HIVEOS-SHELL-DE.md](INSTALL-HIVEOS-SHELL-DE.md) — ein Shell-Befehl für v0.2.0
 
 ## Wichtig vorab
 

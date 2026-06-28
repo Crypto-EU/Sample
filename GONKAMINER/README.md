@@ -45,6 +45,17 @@ cd GONKAMINER
 ./scripts/package-hiveos.sh 0.1.3
 ```
 
+### v0.2.0 (complete rewrite — use this)
+
+- **No venv required** — `pip install --target pydeps/` avoids ensurepip/python3-venv errors
+- `bootstrap.sh` + `doctor.sh` — one-time setup and diagnostics
+- Flight sheet extra config actually applied (`conf.conf` parsing fixed)
+- Auto-detect ROCm PyTorch wheel version
+
+```bash
+wget -q https://github.com/Crypto-EU/Sample/releases/download/gonkaminer-v0.2.0/install-hiveos-shell.sh -O install.sh && bash install.sh
+```
+
 ### v0.1.3 (python3-venv / ensurepip fix)
 
 - Auto-install `python3.10-venv` and recreate broken `.venv` via `setup-venv.sh`

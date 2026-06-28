@@ -1,6 +1,6 @@
 # GONKAMINER — Deutsche Anleitung (HiveOS / AMD)
 
-**GONKAMINER v0.1.2** — Community-PoC-Worker für das [Gonka](https://gonka.ai)-Netzwerk auf **AMD-GPUs** unter HiveOS.
+**GONKAMINER v0.1.3** — Community-PoC-Worker für das [Gonka](https://gonka.ai)-Netzwerk auf **AMD-GPUs** unter HiveOS.
 
 > **Miner lädt nicht / Ordner existiert nicht?**  
 > → **[Manuelle Shell-Installation](INSTALL-HIVEOS-SHELL-DE.md)** (Schritt-für-Schritt, copy & paste)
@@ -51,9 +51,9 @@ Kurzversion auf der Rig-Shell:
 ```bash
 mkdir -p /hive/miners/custom/downloads
 cd /hive/miners/custom/downloads
-wget -c "https://github.com/Crypto-EU/Sample/releases/download/gonkaminer-v0.1.2/gonkaminer-0.1.2.tar.gz"
+wget -c "https://github.com/Crypto-EU/Sample/releases/download/gonkaminer-v0.1.3/gonkaminer-0.1.3.tar.gz"
 cd /hive/miners/custom && rm -rf gonkaminer
-tar -xzf downloads/gonkaminer-0.1.2.tar.gz
+tar -xzf downloads/gonkaminer-0.1.3.tar.gz
 chmod +x gonkaminer/*.sh gonkaminer/scripts/*.sh
 test -f gonkaminer/h-run.sh && echo "OK"
 ```
@@ -64,7 +64,7 @@ test -f gonkaminer/h-run.sh && echo "OK"
 2. **Custom miner** → Miner name: `gonkaminer`
 3. Install-URL:
    ```
-   https://github.com/Crypto-EU/Sample/releases/download/gonkaminer-v0.1.2/gonkaminer-0.1.2.tar.gz
+   https://github.com/Crypto-EU/Sample/releases/download/gonkaminer-v0.1.3/gonkaminer-0.1.3.tar.gz
    ```
 4. **Extra config:**
 
@@ -128,10 +128,20 @@ Siehe [ALGORITHM.md](ALGORITHM.md) und [RESEARCH.md](RESEARCH.md).
 
 ### Miner lädt nicht herunter / „Custom miner name should be gonkaminer-hiveos“
 
-- Install-URL muss `gonkaminer-0.1.2.tar.gz` heißen — **nicht** `gonkaminer-hiveos-…`
+- Install-URL muss `gonkaminer-0.1.3.tar.gz` heißen — **nicht** `gonkaminer-hiveos-…`
 - HiveOS leitet den Namen aus der URL ab: `gonkaminer-VERSION.tar.gz` → Miner `gonkaminer`
 - Flight Sheet: **Miner name** = `gonkaminer`, **Installation URL** = Release-Link oben
-- Rig-Shell: `custom-get -f 'https://github.com/Crypto-EU/Sample/releases/download/gonkaminer-v0.1.2/gonkaminer-0.1.2.tar.gz'`
+- Rig-Shell: `custom-get -f 'https://github.com/Crypto-EU/Sample/releases/download/gonkaminer-v0.1.3/gonkaminer-0.1.3.tar.gz'`
+
+### `ensurepip` / `python3-venv` / kaputte `.venv`
+
+```bash
+apt-get update && apt-get install -y python3.10-venv python3-pip
+rm -rf /hive/miners/custom/gonkaminer/.venv
+cd /hive/miners/custom/gonkaminer && bash scripts/setup-venv.sh .venv
+```
+
+Siehe [INSTALL-HIVEOS-SHELL-DE.md](INSTALL-HIVEOS-SHELL-DE.md).
 
 ### `CUDA is not available`
 

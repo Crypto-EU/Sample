@@ -3,7 +3,7 @@
 # Auf der Rig als root ausführen: bash install-hiveos-shell.sh
 set -euo pipefail
 
-VERSION="${GONKAMINER_VERSION:-0.1.2}"
+VERSION="${GONKAMINER_VERSION:-0.1.3}"
 MINER_NAME="gonkaminer"
 ARCHIVE="${MINER_NAME}-${VERSION}.tar.gz"
 URL="https://github.com/Crypto-EU/Sample/releases/download/gonkaminer-v${VERSION}/${ARCHIVE}"
@@ -56,6 +56,14 @@ rm -rf "${TARGET}"
 echo "> Entpacke nach ${CUSTOM_DIR}"
 cd "${CUSTOM_DIR}"
 tar -xzf "${DOWNLOAD_DIR}/${ARCHIVE}"
+
+echo "> Python venv Abhängigkeit (python3.10-venv)"
+if command -v apt-get >/dev/null 2>&1; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq || true
+  apt-get install -y --no-install-recommends python3.10-venv python3-pip python3-venv 2>/dev/null \
+    || apt-get install -y --no-install-recommends python3-venv python3-pip || true
+fi
 
 find "${TARGET}" -name '*.sh' -exec chmod +x {} +
 chown -R user:user "${TARGET}" 2>/dev/null || true

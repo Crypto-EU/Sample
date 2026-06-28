@@ -42,8 +42,12 @@ This package implements the **PoC API worker** (`/api/v1/pow/*`) from [gonka-ai/
 ```bash
 cd GONKAMINER
 ./scripts/vendor-gonka-pow.sh   # refresh upstream PoC code
-./scripts/package-hiveos.sh 0.1.2
+./scripts/package-hiveos.sh 0.1.3
 ```
+
+### v0.1.3 (python3-venv / ensurepip fix)
+
+- Auto-install `python3.10-venv` and recreate broken `.venv` via `setup-venv.sh`
 
 HiveOS archive **must** be named `gonkaminer-VERSION.tar.gz` (not `gonkaminer-hiveos-…`) so `custom-get` detects miner name `gonkaminer`.
 

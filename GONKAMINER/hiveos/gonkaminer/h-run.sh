@@ -29,12 +29,23 @@ fi
 VENV="${MINER_ROOT}/.venv"
 SCRIPTS="${MINER_ROOT}/scripts"
 
-if [[ ! -x $VENV/bin/python ]]; then
-  echo "Creating Python venv ..."
-  python3 -m venv "$VENV" || {
-    echo "ERROR: python3-venv required on HiveOS"
-    exit 1
-  }
+venv_ready() {
+  [[ -x $VENV/bin/python ]] && "$VENV/bin/python" -c "import pip" 2>/dev/null
+}
+
+if ! venv_ready; then
+  if [[ -x $SCRIPTS/setup-venv.sh ]]; then
+    bash "$SCRIPTS/setup-venv.sh" "$VENV" || exit 1
+  else
+    echo "Creating Python venv ..."
+    if [[ -d $VENV ]]; then rm -rf "$VENV"; fi
+    if ! python3 -m venv "$VENV" 2>/dev/null; then
+      echo "ERROR: python3-venv required. Run on HiveOS shell:"
+      echo "  apt-get update && apt-get install -y python3.10-venv python3-pip"
+      echo "  rm -rf $VENV && python3 -m venv $VENV"
+      exit 1
+    fi
+  fi
 fi
 
 if [[ -x $SCRIPTS/install-rocm-torch.sh ]]; then

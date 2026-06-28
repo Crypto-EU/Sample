@@ -41,8 +41,14 @@ This package implements the **PoC API worker** (`/api/v1/pow/*`) from [gonka-ai/
 ```bash
 cd GONKAMINER
 ./scripts/vendor-gonka-pow.sh   # refresh upstream PoC code
-./scripts/package-hiveos.sh 0.1.1
+./scripts/package-hiveos.sh 0.1.2
 ```
+
+HiveOS archive **must** be named `gonkaminer-VERSION.tar.gz` (not `gonkaminer-hiveos-…`) so `custom-get` detects miner name `gonkaminer`.
+
+### v0.1.2 (HiveOS download fix)
+
+- Renamed release tarball to `gonkaminer-0.1.2.tar.gz` — fixes HiveOS `custom-get` miner name mismatch
 
 ### v0.1.1 (RX 6800 XT / HiveOS fixes)
 

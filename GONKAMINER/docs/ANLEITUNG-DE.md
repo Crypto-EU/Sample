@@ -1,6 +1,6 @@
 # GONKAMINER — Deutsche Anleitung (HiveOS / AMD)
 
-**GONKAMINER v0.1.1** — Community-PoC-Worker für das [Gonka](https://gonka.ai)-Netzwerk auf **AMD-GPUs** unter HiveOS.
+**GONKAMINER v0.1.2** — Community-PoC-Worker für das [Gonka](https://gonka.ai)-Netzwerk auf **AMD-GPUs** unter HiveOS.
 
 ## Wichtig vorab
 
@@ -41,8 +41,12 @@ Dokumentation: https://gonka.ai/docs/host/quickstart/
 
 1. Flight Sheet JSON importieren: `hiveos/gonkaminer-gonka-flightsheet.json`
 2. **Custom miner** → `gonkaminer`
-3. Install-URL: Release-Tarball von GitHub (nach Veröffentlichung)
-4. **Extra config:**
+3. Install-URL (v0.1.2):
+   ```
+   https://github.com/Crypto-EU/Sample/releases/download/gonkaminer-v0.1.2/gonkaminer-0.1.2.tar.gz
+   ```
+4. **Miner name** im Flight Sheet muss exakt `gonkaminer` heißen (nicht `gonkaminer-hiveos`).
+5. **Extra config:**
 
 ```
 HSA_OVERRIDE_GFX_VERSION=10.3.0 GONKAMINER_PORT=8080
@@ -101,6 +105,13 @@ Siehe [ALGORITHM.md](ALGORITHM.md) und [RESEARCH.md](RESEARCH.md).
 - Gewichtung ∝ Anzahl gültiger Nonces pro Sprint
 
 ## Fehlerbehebung
+
+### Miner lädt nicht herunter / „Custom miner name should be gonkaminer-hiveos“
+
+- Install-URL muss `gonkaminer-0.1.2.tar.gz` heißen — **nicht** `gonkaminer-hiveos-…`
+- HiveOS leitet den Namen aus der URL ab: `gonkaminer-VERSION.tar.gz` → Miner `gonkaminer`
+- Flight Sheet: **Miner name** = `gonkaminer`, **Installation URL** = Release-Link oben
+- Rig-Shell: `custom-get -f 'https://github.com/Crypto-EU/Sample/releases/download/gonkaminer-v0.1.2/gonkaminer-0.1.2.tar.gz'`
 
 ### `CUDA is not available`
 

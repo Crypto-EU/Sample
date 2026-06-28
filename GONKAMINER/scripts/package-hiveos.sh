@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VER="${1:-0.1.1}"
-OUT="$ROOT/dist/gonkaminer-hiveos-${VER}.tar.gz"
+VER="${1:-0.1.2}"
+# HiveOS custom-get parses miner name from archive: gonkaminer-VERSION.tar.gz → miner "gonkaminer"
+# Do NOT use gonkaminer-hiveos-VERSION (detected name becomes "gonkaminer-hiveos").
+OUT="$ROOT/dist/gonkaminer-${VER}.tar.gz"
 PKG="$ROOT/dist/pkg/gonkaminer"
 
 "$ROOT/scripts/vendor-gonka-pow.sh"
@@ -14,7 +16,7 @@ cp -a "$ROOT/vendor/gonka-pow" "$PKG/vendor/"
 cp -a "$ROOT/scripts" "$PKG/"
 cp -f "$ROOT/requirements.txt" "$PKG/"
 cp -f "$ROOT/hiveos/gonkaminer/"* "$PKG/"
-chmod +x "$PKG/"*.sh 2>/dev/null || true
+find "$PKG" -name '*.sh' -exec chmod +x {} +
 
 tar -C "$ROOT/dist/pkg" -czf "$OUT" gonkaminer
 echo "Created $OUT"

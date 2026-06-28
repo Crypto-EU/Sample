@@ -1,6 +1,6 @@
 # GONKAMINER — Deutsche Anleitung (HiveOS / AMD)
 
-**GONKAMINER v0.1.0** — Community-PoC-Worker für das [Gonka](https://gonka.ai)-Netzwerk auf **AMD-GPUs** unter HiveOS.
+**GONKAMINER v0.1.1** — Community-PoC-Worker für das [Gonka](https://gonka.ai)-Netzwerk auf **AMD-GPUs** unter HiveOS.
 
 ## Wichtig vorab
 
@@ -104,9 +104,10 @@ Siehe [ALGORITHM.md](ALGORITHM.md) und [RESEARCH.md](RESEARCH.md).
 
 ### `CUDA is not available`
 
-- ROCm-PyTorch auf HiveOS fehlt → `pip install torch` mit ROCm-Wheel oder Hive-Image mit PyTorch nutzen
-- `HSA_OVERRIDE_GFX_VERSION` setzen
+- v0.1.1 installiert automatisch **ROCm-PyTorch** (`scripts/install-rocm-torch.sh`) — nicht das NVIDIA-CUDA-Wheel von pip
+- `HSA_OVERRIDE_GFX_VERSION=10.3.0` für RX 6800 XT (gfx1030)
 - `rocm-smi` muss GPUs anzeigen
+- Preflight-Log prüfen: `/var/log/miner/custom/gonkaminer.log`
 
 ### `Not enough GPU memory`
 

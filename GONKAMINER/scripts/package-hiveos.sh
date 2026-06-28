@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VER="${1:-0.1.0}"
+VER="${1:-0.1.1}"
 OUT="$ROOT/dist/gonkaminer-hiveos-${VER}.tar.gz"
 PKG="$ROOT/dist/pkg/gonkaminer"
 
@@ -11,6 +11,7 @@ rm -rf "$ROOT/dist/pkg"
 mkdir -p "$PKG"
 
 cp -a "$ROOT/vendor/gonka-pow" "$PKG/vendor/"
+cp -a "$ROOT/scripts" "$PKG/"
 cp -f "$ROOT/requirements.txt" "$PKG/"
 cp -f "$ROOT/hiveos/gonkaminer/"* "$PKG/"
 chmod +x "$PKG/"*.sh 2>/dev/null || true

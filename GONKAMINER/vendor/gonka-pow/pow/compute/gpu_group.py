@@ -12,12 +12,10 @@ class NotEnoughGPUResources(Exception):
 
 
 def get_min_group_vram(params: Params) -> float:
-    if params == PARAMS_V1:
-        return 10.0
-    elif params == PARAMS_V2:
+    if params == PARAMS_V2:
         return 38.0
-    else:
-        return 38.0
+    # PARAMS_V1 and default Params() fit on 16 GB consumer cards (e.g. RX 6800 XT).
+    return 10.0
 
 class GpuGroup:
     def __init__(self, devices: List[int]):

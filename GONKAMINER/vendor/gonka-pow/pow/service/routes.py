@@ -1,7 +1,4 @@
-import os
-
 from fastapi import APIRouter, Body, Request, HTTPException
-from starlette.background import BackgroundTask
 from starlette.responses import JSONResponse
 
 from pow.service.manager import PowInitRequestUrl, PowManager
@@ -29,12 +26,8 @@ async def init(
     try:
         await manager.switch_to_pow_async(init_request)
     except NotEnoughGPUResources as e:
-        logger.critical(f"GPU resources unavailable: {e}. Shutting down.")
-        return JSONResponse(
-            status_code=503,
-            content={"detail": str(e)},
-            background=BackgroundTask(os._exit, 1),
-        )
+        logger.error(f"GPU resources unavailable: {e}")
+        return JSONResponse(status_code=503, content={"detail": str(e)})
     return {
         "status": "OK",
         "pow_status": manager.get_pow_status()
@@ -62,12 +55,8 @@ async def init_generate(
         if manager.init_request != init_request:
             await manager.switch_to_pow_async(init_request)
     except NotEnoughGPUResources as e:
-        logger.critical(f"GPU resources unavailable: {e}. Shutting down.")
-        return JSONResponse(
-            status_code=503,
-            content={"detail": str(e)},
-            background=BackgroundTask(os._exit, 1),
-        )
+        logger.error(f"GPU resources unavailable: {e}")
+        return JSONResponse(status_code=503, content={"detail": str(e)})
 
     manager.pow_controller.start_generate()
     return {
@@ -92,12 +81,8 @@ async def init_validate(
         if manager.init_request != init_request:
             await manager.switch_to_pow_async(init_request)
     except NotEnoughGPUResources as e:
-        logger.critical(f"GPU resources unavailable: {e}. Shutting down.")
-        return JSONResponse(
-            status_code=503,
-            content={"detail": str(e)},
-            background=BackgroundTask(os._exit, 1),
-        )
+        logger.error(f"GPU resources unavailable: {e}")
+        return JSONResponse(status_code=503, content={"detail": str(e)})
 
     manager.pow_controller.start_validate()
     return {

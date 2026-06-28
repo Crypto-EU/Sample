@@ -42,3 +42,4 @@ def health():
 PY
 
 echo "Vendored PoC stack to $DEST"
+"$ROOT/scripts/apply-amd-patches.sh"

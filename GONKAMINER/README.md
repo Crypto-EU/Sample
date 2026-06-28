@@ -41,8 +41,16 @@ This package implements the **PoC API worker** (`/api/v1/pow/*`) from [gonka-ai/
 ```bash
 cd GONKAMINER
 ./scripts/vendor-gonka-pow.sh   # refresh upstream PoC code
-./scripts/package-hiveos.sh 0.1.0
+./scripts/package-hiveos.sh 0.1.1
 ```
+
+### v0.1.1 (RX 6800 XT / HiveOS fixes)
+
+- ROCm PyTorch auto-install (replaces wrong CUDA `pip install torch`)
+- VRAM gate lowered to 10 GB for PARAMS_V1 / default Params (16 GB cards accepted)
+- Single-GPU fallback when accelerate dispatch fails
+- PoC init errors no longer kill the worker process (`os._exit`)
+- Preflight checks before uvicorn start
 
 ## License
 

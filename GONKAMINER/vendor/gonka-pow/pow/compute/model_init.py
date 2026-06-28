@@ -107,8 +107,13 @@ class ModelWrapper(torch.nn.Module):
                 logger.info("Multi-GPU distribution successful")
             except Exception as e:
                 logger.error(f"Multi-GPU distribution failed: {e}")
-                logger.error("Falling back to single GPU")
-                raise e
+                logger.warning(f"Falling back to single GPU: {primary_device}")
+                try:
+                    model = model.to(primary_device)
+                    logger.info("Single-GPU placement successful")
+                except Exception as fallback_err:
+                    logger.error(f"Single-GPU fallback failed: {fallback_err}")
+                    raise fallback_err
             
             model.eval()
             model.requires_grad_(False)

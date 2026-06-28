@@ -2,6 +2,9 @@
 
 **GONKAMINER v0.1.2** — Community-PoC-Worker für das [Gonka](https://gonka.ai)-Netzwerk auf **AMD-GPUs** unter HiveOS.
 
+> **Miner lädt nicht / Ordner existiert nicht?**  
+> → **[Manuelle Shell-Installation](INSTALL-HIVEOS-SHELL-DE.md)** (Schritt-für-Schritt, copy & paste)
+
 ## Wichtig vorab
 
 Gonka ist **kein klassischer Pool-Miner** wie Pearl oder Ethereum. Du brauchst:
@@ -39,14 +42,31 @@ Dokumentation: https://gonka.ai/docs/host/quickstart/
 
 ## Schritt 2 — GONKAMINER auf HiveOS installieren
 
+### Option A — Manuelle Shell-Installation (empfohlen bei Download-Problemen)
+
+Vollständige Anleitung: **[docs/INSTALL-HIVEOS-SHELL-DE.md](INSTALL-HIVEOS-SHELL-DE.md)**
+
+Kurzversion auf der Rig-Shell:
+
+```bash
+mkdir -p /hive/miners/custom/downloads
+cd /hive/miners/custom/downloads
+wget -c "https://github.com/Crypto-EU/Sample/releases/download/gonkaminer-v0.1.2/gonkaminer-0.1.2.tar.gz"
+cd /hive/miners/custom && rm -rf gonkaminer
+tar -xzf downloads/gonkaminer-0.1.2.tar.gz
+chmod +x gonkaminer/*.sh gonkaminer/scripts/*.sh
+test -f gonkaminer/h-run.sh && echo "OK"
+```
+
+### Option B — Flight Sheet (nach manueller Installation oder wenn Download klappt)
+
 1. Flight Sheet JSON importieren: `hiveos/gonkaminer-gonka-flightsheet.json`
-2. **Custom miner** → `gonkaminer`
-3. Install-URL (v0.1.2):
+2. **Custom miner** → Miner name: `gonkaminer`
+3. Install-URL:
    ```
    https://github.com/Crypto-EU/Sample/releases/download/gonkaminer-v0.1.2/gonkaminer-0.1.2.tar.gz
    ```
-4. **Miner name** im Flight Sheet muss exakt `gonkaminer` heißen (nicht `gonkaminer-hiveos`).
-5. **Extra config:**
+4. **Extra config:**
 
 ```
 HSA_OVERRIDE_GFX_VERSION=10.3.0 GONKAMINER_PORT=8080

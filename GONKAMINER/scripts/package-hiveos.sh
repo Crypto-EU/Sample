@@ -17,6 +17,7 @@ cp -a "$ROOT/scripts" "$PKG/"
 cp -f "$ROOT/requirements.txt" "$PKG/"
 cp -f "$ROOT/hiveos/gonkaminer/"* "$PKG/"
 find "$PKG" -name '*.sh' -exec chmod +x {} +
+chmod +x "$ROOT/scripts/install-hiveos-shell.sh" 2>/dev/null || true
 
 tar -C "$ROOT/dist/pkg" -czf "$OUT" gonkaminer
 echo "Created $OUT"

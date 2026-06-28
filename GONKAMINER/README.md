@@ -20,6 +20,7 @@ This package implements the **PoC API worker** (`/api/v1/pow/*`) from [gonka-ai/
 | Algorithm write-up | [docs/ALGORITHM.md](docs/ALGORITHM.md) |
 | Research notes | [docs/RESEARCH.md](docs/RESEARCH.md) |
 | German HiveOS guide | [docs/ANLEITUNG-DE.md](docs/ANLEITUNG-DE.md) |
+| **Manual HiveOS shell install (DE)** | [docs/INSTALL-HIVEOS-SHELL-DE.md](docs/INSTALL-HIVEOS-SHELL-DE.md) |
 
 ## Hardware (realistic)
 

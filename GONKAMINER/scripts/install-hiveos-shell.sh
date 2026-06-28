@@ -2,13 +2,15 @@
 # GONKAMINER — complete HiveOS shell install (one command).
 set -euo pipefail
 
-VERSION="${GONKAMINER_VERSION:-0.2.0}"
+VERSION="${GONKAMINER_VERSION:-0.2.1}"
 MINER_NAME="gonkaminer"
 ARCHIVE="${MINER_NAME}-${VERSION}.tar.gz"
 URL="https://github.com/Crypto-EU/Sample/releases/download/gonkaminer-v${VERSION}/${ARCHIVE}"
 CUSTOM_DIR="/hive/miners/custom"
 DOWNLOAD_DIR="${CUSTOM_DIR}/downloads"
 TARGET="${CUSTOM_DIR}/${MINER_NAME}"
+ARCHIVE_PATH="${DOWNLOAD_DIR}/${ARCHIVE}"
+FORCE="${GONKAMINER_FORCE:-0}"
 
 echo "=============================================="
 echo " GONKAMINER ${VERSION} — HiveOS Installation"
@@ -16,27 +18,72 @@ echo "=============================================="
 
 [[ $EUID -eq 0 ]] || { echo "Bitte als root ausführen."; exit 1; }
 
-mkdir -p "${DOWNLOAD_DIR}"
-cd "${DOWNLOAD_DIR}"
+validate_archive() {
+  local f="$1"
+  [[ -s "$f" ]] || { echo "  leer oder fehlt: $f"; return 1; }
+  if ! file -b "$f" 2>/dev/null | grep -qi 'gzip'; then
+    echo "  keine gzip-Datei: $(file -b "$f" 2>/dev/null || echo unknown)"
+    return 1
+  fi
+  if ! tar -tzf "$f" 2>/dev/null | grep -q "^${MINER_NAME}/"; then
+    echo "  kein ${MINER_NAME}/ Ordner im Archiv"
+    echo "  Inhalt:"
+    tar -tzf "$f" 2>/dev/null | head -5 | sed 's/^/    /' || true
+    return 1
+  fi
+  return 0
+}
 
-if [[ ! -s "${ARCHIVE}" ]]; then
+download_archive() {
   echo "> Download ${URL}"
-  wget -c --timeout=120 --tries=5 "${URL}" -O "${ARCHIVE}" \
-    || curl -fL --retry 5 -o "${ARCHIVE}" "${URL}"
+  rm -f "${ARCHIVE_PATH}"
+  if command -v wget >/dev/null 2>&1; then
+    wget --timeout=120 --tries=5 "${URL}" -O "${ARCHIVE_PATH}"
+  elif command -v curl >/dev/null 2>&1; then
+    curl -fL --retry 5 --connect-timeout 120 -o "${ARCHIVE_PATH}" "${URL}"
+  else
+    echo "FEHLER: wget oder curl benötigt"
+    exit 1
+  fi
+}
+
+mkdir -p "${DOWNLOAD_DIR}"
+
+if [[ "$FORCE" == "1" ]] || [[ ! -f "${ARCHIVE_PATH}" ]] || ! validate_archive "${ARCHIVE_PATH}"; then
+  [[ -f "${ARCHIVE_PATH}" ]] && echo "> Altes/kaputtes Archiv wird ersetzt"
+  download_archive
 fi
 
-[[ -s "${ARCHIVE}" ]] || { echo "FEHLER: Download leer"; exit 1; }
-tar -tzf "${ARCHIVE}" | head -1 | grep -q "^${MINER_NAME}/" || { echo "FEHLER: falsches Archiv"; exit 1; }
+if ! validate_archive "${ARCHIVE_PATH}"; then
+  echo ""
+  echo "FEHLER: Archiv ungültig nach Download."
+  echo "  Pfad: ${ARCHIVE_PATH}"
+  echo "  Größe: $(ls -lh "${ARCHIVE_PATH}" 2>/dev/null | awk '{print $5}' || echo 0)"
+  echo ""
+  echo "Manuell testen:"
+  echo "  rm -f ${ARCHIVE_PATH}"
+  echo "  wget \"${URL}\" -O ${ARCHIVE_PATH}"
+  echo "  file ${ARCHIVE_PATH}"
+  echo "  tar -tzf ${ARCHIVE_PATH} | head"
+  exit 1
+fi
 
-echo "> Entpacken"
+echo "> Archiv OK ($(du -h "${ARCHIVE_PATH}" | awk '{print $1}'))"
+
+echo "> Entpacken nach ${CUSTOM_DIR}"
 cd "${CUSTOM_DIR}"
 rm -rf "${TARGET}"
-tar -xzf "${DOWNLOAD_DIR}/${ARCHIVE}"
+tar -xzf "${ARCHIVE_PATH}"
 find "${TARGET}" -name '*.sh' -exec chmod +x {} +
 
 for f in h-manifest.conf h-config.sh h-run.sh h-stats.sh; do
   [[ -f "${TARGET}/${f}" ]] && sed -i 's|/hive/custom|/hive/miners/custom|g' "${TARGET}/${f}"
 done
+
+[[ -f "${TARGET}/scripts/bootstrap.sh" ]] || {
+  echo "FEHLER: Entpacken fehlgeschlagen — ${TARGET}/scripts/bootstrap.sh fehlt"
+  exit 1
+}
 
 echo "> Bootstrap (Python + ROCm PyTorch — kann 5-15 Min dauern)"
 cd "${TARGET}"

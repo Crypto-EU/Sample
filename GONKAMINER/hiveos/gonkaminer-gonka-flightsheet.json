@@ -1,0 +1,23 @@
+{
+  "name": "GONKAMINER-AMD-Host",
+  "isFavorite": false,
+  "items": [
+    {
+      "coin": "GNK",
+      "pool_ssl": false,
+      "wal_id": 0,
+      "dpool_ssl": false,
+      "miner": "custom",
+      "miner_alt": "gonkaminer",
+      "miner_config": {
+        "url": "host-local:8080",
+        "algo": "gonka-poc",
+        "miner": "gonkaminer",
+        "template": "%WAL%",
+        "install_url": "https://github.com/Crypto-EU/Sample/releases/download/gonkaminer-v0.1.0/gonkaminer-hiveos-0.1.0.tar.gz",
+        "user_config": "HSA_OVERRIDE_GFX_VERSION=10.3.0 GONKAMINER_PORT=8080"
+      },
+      "pool_geo": []
+    }
+  ]
+}

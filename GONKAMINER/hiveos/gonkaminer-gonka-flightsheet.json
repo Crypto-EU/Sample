@@ -14,7 +14,7 @@
         "algo": "gonka-poc",
         "miner": "gonkaminer",
         "template": "%WAL%",
-        "install_url": "https://github.com/Crypto-EU/Sample/releases/download/gonkaminer-v0.2.1/gonkaminer-0.2.1.tar.gz",
+        "install_url": "https://github.com/Crypto-EU/Sample/releases/download/gonkaminer-v0.2.2/gonkaminer-0.2.2.tar.gz",
         "user_config": "HSA_OVERRIDE_GFX_VERSION=10.3.0 GONKAMINER_PORT=8080"
       },
       "pool_geo": []

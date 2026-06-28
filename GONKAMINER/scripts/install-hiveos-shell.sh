@@ -2,7 +2,7 @@
 # GONKAMINER — complete HiveOS shell install (one command).
 set -euo pipefail
 
-VERSION="${GONKAMINER_VERSION:-0.2.1}"
+VERSION="${GONKAMINER_VERSION:-0.2.2}"
 MINER_NAME="gonkaminer"
 ARCHIVE="${MINER_NAME}-${VERSION}.tar.gz"
 URL="https://github.com/Crypto-EU/Sample/releases/download/gonkaminer-v${VERSION}/${ARCHIVE}"
@@ -21,13 +21,14 @@ echo "=============================================="
 validate_archive() {
   local f="$1"
   [[ -s "$f" ]] || { echo "  leer oder fehlt: $f"; return 1; }
-  if ! file -b "$f" 2>/dev/null | grep -qi 'gzip'; then
-    echo "  keine gzip-Datei: $(file -b "$f" 2>/dev/null || echo unknown)"
+  # Do not use 'file' — broken/missing on many HiveOS images.
+  if ! tar -tzf "$f" >/dev/null 2>&1; then
+    echo "  tar kann Archiv nicht lesen"
+    head -c 80 "$f" 2>/dev/null | sed 's/^/    /' || true
     return 1
   fi
   if ! tar -tzf "$f" 2>/dev/null | grep -q "^${MINER_NAME}/"; then
     echo "  kein ${MINER_NAME}/ Ordner im Archiv"
-    echo "  Inhalt:"
     tar -tzf "$f" 2>/dev/null | head -5 | sed 's/^/    /' || true
     return 1
   fi
@@ -61,9 +62,6 @@ if ! validate_archive "${ARCHIVE_PATH}"; then
   echo "  Größe: $(ls -lh "${ARCHIVE_PATH}" 2>/dev/null | awk '{print $5}' || echo 0)"
   echo ""
   echo "Manuell testen:"
-  echo "  rm -f ${ARCHIVE_PATH}"
-  echo "  wget \"${URL}\" -O ${ARCHIVE_PATH}"
-  echo "  file ${ARCHIVE_PATH}"
   echo "  tar -tzf ${ARCHIVE_PATH} | head"
   exit 1
 fi

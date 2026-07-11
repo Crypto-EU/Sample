@@ -114,10 +114,10 @@ bool StratumClient::wait_for_rpc(int expected_id, JsonValue* result, std::string
         if (!id_val || json_int(*id_val) != expected_id) continue;
 
         if (const auto* err = json_get(*parsed, "error")) {
-            if (error_msg && err->type != JsonValue::Type::Null) {
-                *error_msg = json_error_message(*err);
+            if (err->type != JsonValue::Type::Null) {
+                if (error_msg) *error_msg = json_error_message(*err);
+                return false;
             }
-            return false;
         }
 
         if (const auto* res = json_get(*parsed, "result")) {
@@ -132,7 +132,7 @@ bool StratumClient::wait_for_rpc(int expected_id, JsonValue* result, std::string
 bool StratumClient::handshake() {
     const int subscribe_id = msg_id_++;
     const std::string subscribe_params =
-        "[\"SUPERHERO/0.2.10\",{\"protocol_compliant\":[\"pre_hash_block_tier_v18\",\"matmul-extended-v1\"]}]";
+        "[\"SUPERHERO/0.2.11\",{\"protocol_compliant\":[\"pre_hash_block_tier_v18\"]}]";
     if (!send_rpc(subscribe_id, "mining.subscribe", subscribe_params)) return false;
 
     JsonValue subscribe_result;

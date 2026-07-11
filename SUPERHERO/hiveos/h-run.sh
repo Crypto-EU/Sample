@@ -29,7 +29,6 @@ load_config() {
         key="${line%%=*}"
         case "$key" in
             POOL|WALLET|WORKER|PASS|BATCH|WORKGROUP|EXTRA_ARGS)
-                # Values written with printf %q — safe to eval
                 eval "$line"
                 ;;
         esac
@@ -50,20 +49,44 @@ if [[ -z "$POOL_HOST" || -z "$POOL_PORT" ]]; then
     exit 1
 fi
 
+# --- AMD OpenCL runtime (HiveOS) ---
+export OPENCL_VENDOR_PATH="${OPENCL_VENDOR_PATH:-/etc/OpenCL/vendors}"
+
+# AMD OpenCL ICD library paths (libamdocl64.so)
+for amdcl in \
+    /opt/amdgpu/lib64/libamdocl64.so \
+    /opt/amdgpu-pro/lib/x86_64-linux-gnu/libamdocl64.so \
+    /usr/lib/x86_64-linux-gnu/libamdocl64.so; do
+    if [[ -f "$amdcl" ]]; then
+        export LD_LIBRARY_PATH="$(dirname "$amdcl"):${LD_LIBRARY_PATH:-}"
+        break
+    fi
+done
+
 for libdir in \
     /opt/amdgpu/lib64 \
+    /opt/rocm/opencl/lib \
+    /opt/rocm/lib \
     /opt/amdgpu-pro/lib/x86_64-linux-gnu \
+    /usr/lib/x86_64-linux-gnu \
     /hive/lib; do
     if [[ -d "$libdir" ]]; then
         export LD_LIBRARY_PATH="${libdir}:${LD_LIBRARY_PATH:-}"
     fi
 done
 
-export HSA_OVERRIDE_GFX_VERSION="${HSA_OVERRIDE_GFX_VERSION:-10.3.0}"
+# HSA override: set per GPU in Hive rig env vars (do NOT force wrong version)
+# RX 5700 XT (gfx1010): HSA_OVERRIDE_GFX_VERSION=10.1.0
+# RX 6800 XT (gfx1030): HSA_OVERRIDE_GFX_VERSION=10.3.0
 export GPU_MAX_ALLOC_PERCENT="${GPU_MAX_ALLOC_PERCENT:-100}"
 export GPU_MAX_HEAP_SIZE="${GPU_MAX_HEAP_SIZE:-100}"
 export GPU_FORCE_64BIT_PTR="${GPU_FORCE_64BIT_PTR:-1}"
 export GPU_USE_SYNC_OBJECTS="${GPU_USE_SYNC_OBJECTS:-1}"
+
+if [[ -z "${HSA_OVERRIDE_GFX_VERSION:-}" ]]; then
+    echo "SUPERHERO note: set HSA_OVERRIDE_GFX_VERSION in rig env if GPU not detected"
+    echo "  RX 5700 XT -> 10.1.0   |   RX 6800 XT -> 10.3.0"
+fi
 
 ARGS=(
     --pool "${POOL_HOST}:${POOL_PORT}"
@@ -84,5 +107,8 @@ LOG="${CUSTOM_LOG_BASENAME:-${MINER_PATH}/h-run}.log"
 mkdir -p "$(dirname "$LOG")"
 
 echo "SUPERHERO starting pool=${POOL_HOST}:${POOL_PORT} wallet=$WALLET worker=$WORKER"
+if [[ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ]]; then
+    echo "SUPERHERO HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION}"
+fi
 
 exec ./"${CUSTOM_MINERBIN:-superhero}" "${ARGS[@]}" 2>&1 | tee -a "$LOG"

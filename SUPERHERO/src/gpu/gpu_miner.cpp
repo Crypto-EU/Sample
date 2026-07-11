@@ -30,34 +30,104 @@ namespace {
         }                                                                                                      \
     } while (0)
 
-cl_platform_id pick_amd_platform() {
+void append_platform_devices(cl_platform_id platform, cl_device_type dtype, std::vector<cl_device_id>& out,
+                             std::string& diag) {
+    char pname[256]{}, pvendor[256]{};
+    clGetPlatformInfo(platform, CL_PLATFORM_NAME, sizeof(pname), pname, nullptr);
+    clGetPlatformInfo(platform, CL_PLATFORM_VENDOR, sizeof(pvendor), pvendor, nullptr);
+
     cl_uint count = 0;
-    clGetPlatformIDs(0, nullptr, &count);
-    if (count == 0) return nullptr;
-    std::vector<cl_platform_id> platforms(count);
-    clGetPlatformIDs(count, platforms.data(), nullptr);
-    for (auto p : platforms) {
-        char vendor[256]{};
-        clGetPlatformInfo(p, CL_PLATFORM_VENDOR, sizeof(vendor), vendor, nullptr);
-        std::string v(vendor);
-        if (v.find("AMD") != std::string::npos || v.find("Advanced Micro") != std::string::npos) return p;
+    const cl_int err = clGetDeviceIDs(platform, dtype, 0, nullptr, &count);
+    if (err != CL_SUCCESS || count == 0) return;
+
+    const size_t before = out.size();
+    out.resize(before + count);
+    if (clGetDeviceIDs(platform, dtype, count, out.data() + before, nullptr) != CL_SUCCESS) {
+        out.resize(before);
+        return;
     }
-    return platforms[0];
+
+    for (cl_uint i = 0; i < count; ++i) {
+        char dname[256]{}, dvendor[256]{};
+        cl_device_type dt = 0;
+        clGetDeviceInfo(out[before + i], CL_DEVICE_NAME, sizeof(dname), dname, nullptr);
+        clGetDeviceInfo(out[before + i], CL_DEVICE_VENDOR, sizeof(dvendor), dvendor, nullptr);
+        clGetDeviceInfo(out[before + i], CL_DEVICE_TYPE, sizeof(dt), &dt, nullptr);
+        const char* kind = (dt & CL_DEVICE_TYPE_GPU)        ? "GPU"
+                           : (dt & CL_DEVICE_TYPE_ACCELERATOR) ? "ACC"
+                           : (dt & CL_DEVICE_TYPE_CPU)         ? "CPU"
+                                                               : "DEV";
+        diag += std::string("  [") + kind + "] " + pvendor + " / " + pname + ": " + dname + " (" + dvendor + ")\n";
+    }
 }
 
-cl_device_id pick_gpu(cl_platform_id platform) {
-    cl_uint count = 0;
-    clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 0, nullptr, &count);
-    if (count == 0) {
-        clGetDeviceIDs(platform, CL_DEVICE_TYPE_ALL, 0, nullptr, &count);
-        if (count == 0) return nullptr;
-        std::vector<cl_device_id> devs(count);
-        clGetDeviceIDs(platform, CL_DEVICE_TYPE_ALL, 0, devs.data(), nullptr);
-        return devs[0];
+int device_score(cl_device_id device) {
+    char vendor[256]{};
+    cl_device_type dt = 0;
+    clGetDeviceInfo(device, CL_DEVICE_VENDOR, sizeof(vendor), vendor, nullptr);
+    clGetDeviceInfo(device, CL_DEVICE_TYPE, sizeof(dt), &dt, nullptr);
+
+    if (dt & CL_DEVICE_TYPE_CPU) return -1;
+
+    int score = 0;
+    const std::string v(vendor);
+    if (v.find("AMD") != std::string::npos || v.find("Advanced Micro") != std::string::npos) score += 100;
+    if (dt & CL_DEVICE_TYPE_GPU) score += 10;
+    if (dt & CL_DEVICE_TYPE_ACCELERATOR) score += 5;
+    return score;
+}
+
+cl_device_id pick_gpu(cl_platform_id* out_platform, std::string* error) {
+    cl_uint platform_count = 0;
+    if (clGetPlatformIDs(0, nullptr, &platform_count) != CL_SUCCESS || platform_count == 0) {
+        if (error) {
+            *error = "no OpenCL platform (install amdgpu drivers, check /etc/OpenCL/vendors/amdocl64.icd)";
+        }
+        return nullptr;
     }
-    std::vector<cl_device_id> devs(count);
-    clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 0, devs.data(), nullptr);
-    return devs[0];
+
+    std::vector<cl_platform_id> platforms(platform_count);
+    clGetPlatformIDs(platform_count, platforms.data(), nullptr);
+
+    std::vector<cl_device_id> candidates;
+    std::string diag = "OpenCL scan:\n";
+    for (cl_platform_id platform : platforms) {
+        append_platform_devices(platform, CL_DEVICE_TYPE_GPU, candidates, diag);
+        append_platform_devices(platform, CL_DEVICE_TYPE_ACCELERATOR, candidates, diag);
+    }
+
+    cl_device_id best = nullptr;
+    cl_platform_id best_platform = nullptr;
+    int best_score = -1;
+
+    for (cl_platform_id platform : platforms) {
+        for (cl_device_type dtype : {CL_DEVICE_TYPE_GPU, CL_DEVICE_TYPE_ACCELERATOR}) {
+            cl_uint count = 0;
+            if (clGetDeviceIDs(platform, dtype, 0, nullptr, &count) != CL_SUCCESS || count == 0) continue;
+            std::vector<cl_device_id> devs(count);
+            if (clGetDeviceIDs(platform, dtype, count, devs.data(), nullptr) != CL_SUCCESS) continue;
+            for (cl_device_id dev : devs) {
+                const int score = device_score(dev);
+                if (score > best_score) {
+                    best_score = score;
+                    best = dev;
+                    best_platform = platform;
+                }
+            }
+        }
+    }
+
+    if (!best) {
+        if (error) {
+            *error = "no OpenCL GPU device\n" + diag +
+                     "Hints: export HSA_OVERRIDE_GFX_VERSION=10.1.0 (RX5700XT) or 10.3.0 (RX6800XT); "
+                     "check clinfo; verify /opt/amdgpu/lib64/libamdocl64.so";
+        }
+        return nullptr;
+    }
+
+    if (out_platform) *out_platform = best_platform;
+    return best;
 }
 
 void write_target_limbs(const crypto::ArithUint256& target, std::array<uint32_t, 8>& out) {
@@ -111,14 +181,9 @@ bool GpuMiner::init(std::string* error) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (ready_) return true;
 
-    cl_platform_id platform = pick_amd_platform();
-    if (!platform) {
-        if (error) *error = "no OpenCL platform";
-        return false;
-    }
-    cl_device_id device = pick_gpu(platform);
+    cl_platform_id platform = nullptr;
+    cl_device_id device = pick_gpu(&platform, error);
     if (!device) {
-        if (error) *error = "no OpenCL GPU device";
         return false;
     }
 

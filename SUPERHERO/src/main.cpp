@@ -13,10 +13,11 @@
 
 static void print_usage() {
     std::fprintf(stderr,
-        "SUPERHERO v0.2.4 - BTX (btx-matmul) GPU-only AMD miner for HiveOS\n\n"
+        "SUPERHERO v0.2.5 - BTX (btx-matmul) GPU-only AMD miner for HiveOS\n\n"
         "Usage:\n"
         "  superhero --pool HOST:PORT --wallet WALLET [options]\n"
         "  superhero --benchmark [--batch-size N]\n"
+        "  superhero --list-gpus\n"
         "  superhero --self-test\n\n"
         "Options:\n"
         "  --worker NAME        Worker suffix (default: rig)\n"
@@ -24,8 +25,9 @@ static void print_usage() {
         "  --workgroup N        OpenCL workgroup size (default: 256)\n"
         "  --password PASS      Pool password (default: x)\n"
         "  -v                   Verbose logging\n\n"
-        "GPU env (AMD RX 6800 XT):\n"
-        "  export HSA_OVERRIDE_GFX_VERSION=10.3.0\n"
+        "GPU env (AMD):\n"
+        "  RX 5700 XT: export HSA_OVERRIDE_GFX_VERSION=10.1.0\n"
+        "  RX 6800 XT: export HSA_OVERRIDE_GFX_VERSION=10.3.0\n"
         "  export GPU_MAX_ALLOC_PERCENT=100\n\n"
         "Pools:\n"
         "  minebtx: stratum.minebtx.com:3333\n"
@@ -86,6 +88,7 @@ int main(int argc, char** argv) {
     cfg.password = "x";
     bool benchmark = false;
     bool self_test = false;
+    bool list_gpus = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -97,6 +100,8 @@ int main(int argc, char** argv) {
             superhero::util::set_verbose(true);
         } else if (arg == "--benchmark") {
             benchmark = true;
+        } else if (arg == "--list-gpus") {
+            list_gpus = true;
         } else if (arg == "--self-test") {
             self_test = true;
         } else if (arg == "--pool" && i + 1 < argc) {
@@ -126,6 +131,16 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    if (list_gpus) {
+        std::string err;
+        if (!superhero::gpu::GpuMiner::instance().init(&err)) {
+            std::fprintf(stderr, "GPU init failed:\n%s\n", err.c_str());
+            return 1;
+        }
+        std::printf("Selected GPU: %s\n", superhero::gpu::GpuMiner::instance().device_name().c_str());
+        return 0;
+    }
+
     if (benchmark) return run_benchmark(cfg.batch_size);
 
     if (cfg.wallet.empty()) {
@@ -140,7 +155,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::fprintf(stderr, "SUPERHERO v0.2.4 GPU-only | %s | batch=%llu | pool=%s:%d\n",
+    std::fprintf(stderr, "SUPERHERO v0.2.5 GPU-only | %s | batch=%llu | pool=%s:%d\n",
                  superhero::gpu::GpuMiner::instance().device_name().c_str(),
                  static_cast<unsigned long long>(cfg.batch_size), cfg.pool_host.c_str(), cfg.pool_port);
     return superhero::stratum::run_miner(cfg);

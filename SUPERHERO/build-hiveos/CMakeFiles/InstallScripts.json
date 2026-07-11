@@ -1,7 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"/workspace/SUPERHERO/build-hiveos/cmake_install.cmake"
-	],
-	"Parallel" : false
-}

@@ -1,8 +1,0 @@
-/workspace/SUPERHERO/build-hiveos/CMakeFiles/superhero.dir
-/workspace/SUPERHERO/build-hiveos/CMakeFiles/superhero-test.dir
-/workspace/SUPERHERO/build-hiveos/CMakeFiles/edit_cache.dir
-/workspace/SUPERHERO/build-hiveos/CMakeFiles/rebuild_cache.dir
-/workspace/SUPERHERO/build-hiveos/CMakeFiles/list_install_components.dir
-/workspace/SUPERHERO/build-hiveos/CMakeFiles/install.dir
-/workspace/SUPERHERO/build-hiveos/CMakeFiles/install/local.dir
-/workspace/SUPERHERO/build-hiveos/CMakeFiles/install/strip.dir

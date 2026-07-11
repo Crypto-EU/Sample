@@ -1,4 +1,5 @@
 build/
+build-hiveos/
 dist/
 *.o
 *.a

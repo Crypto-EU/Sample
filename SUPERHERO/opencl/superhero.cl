@@ -20,25 +20,25 @@ constant uint K256[64] = {
     0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
 };
 
-inline uint rotr32(uint x, uint n) { return (x >> n) | (x << (32u - n)); }
-inline uint ch(uint x, uint y, uint z) { return (x & y) ^ (~x & z); }
-inline uint maj(uint x, uint y, uint z) { return (x & y) ^ (x & z) ^ (y & z); }
-inline uint s0(uint x) { return rotr32(x,2)^rotr32(x,13)^rotr32(x,22); }
-inline uint s1(uint x) { return rotr32(x,6)^rotr32(x,11)^rotr32(x,25); }
-inline uint g0(uint x) { return rotr32(x,7)^rotr32(x,18)^(x>>3); }
-inline uint g1(uint x) { return rotr32(x,17)^rotr32(x,19)^(x>>10); }
+static inline uint rotr32(uint x, uint n) { return (x >> n) | (x << (32u - n)); }
+static inline uint ch(uint x, uint y, uint z) { return (x & y) ^ (~x & z); }
+static inline uint maj(uint x, uint y, uint z) { return (x & y) ^ (x & z) ^ (y & z); }
+static inline uint s0(uint x) { return rotr32(x,2)^rotr32(x,13)^rotr32(x,22); }
+static inline uint s1(uint x) { return rotr32(x,6)^rotr32(x,11)^rotr32(x,25); }
+static inline uint g0(uint x) { return rotr32(x,7)^rotr32(x,18)^(x>>3); }
+static inline uint g1(uint x) { return rotr32(x,17)^rotr32(x,19)^(x>>10); }
 
-inline uint m31_reduce64(ulong x) {
+static inline uint m31_reduce64(ulong x) {
     ulong f = (x & (ulong)MOD) + (x >> 31);
     uint lo = (uint)(f & MOD);
     uint hi = (uint)(f >> 31);
     uint r = lo + hi;
     return (r >= MOD) ? (r - MOD) : r;
 }
-inline uint m31_add(uint a, uint b) { uint s=a+b; return (s>=MOD)?(s-MOD):s; }
-inline uint m31_mul(uint a, uint b) { return m31_reduce64((ulong)a*(ulong)b); }
+static inline uint m31_add(uint a, uint b) { uint s=a+b; return (s>=MOD)?(s-MOD):s; }
+static inline uint m31_mul(uint a, uint b) { return m31_reduce64((ulong)a*(ulong)b); }
 
-inline void sha256_compress(uint st[8], uint w[16]) {
+static inline void sha256_compress(uint st[8], uint w[16]) {
     uint wex[64];
     for (int i = 0; i < 16; ++i) wex[i] = w[i];
     for (int t = 16; t < 64; ++t)
@@ -52,7 +52,7 @@ inline void sha256_compress(uint st[8], uint w[16]) {
     st[0]+=a; st[1]+=b; st[2]+=c; st[3]+=d; st[4]+=e; st[5]+=f; st[6]+=g; st[7]+=h;
 }
 
-inline void sha256_oneshot(const uchar* msg, uint msg_len, uchar out[32]) {
+static inline void sha256_oneshot(const uchar* msg, uint msg_len, uchar out[32]) {
     uint w[16];
     for (int i = 0; i < 16; ++i) w[i] = 0;
     for (uint i = 0; i < msg_len; ++i)
@@ -67,13 +67,13 @@ inline void sha256_oneshot(const uchar* msg, uint msg_len, uchar out[32]) {
     }
 }
 
-inline void sha256d(const uchar* msg, uint msg_len, uchar out[32]) {
+static inline void sha256d(const uchar* msg, uint msg_len, uchar out[32]) {
     uchar t[32];
     sha256_oneshot(msg, msg_len, t);
     sha256_oneshot(t, 32, out);
 }
 
-inline uint from_oracle(const uchar seed_le[32], uint index) {
+static inline uint from_oracle(const uchar seed_le[32], uint index) {
     uchar msg[36];
     for (int i = 0; i < 32; ++i) msg[i] = seed_le[31-i];
     msg[32]=(uchar)index; msg[33]=(uchar)(index>>8); msg[34]=(uchar)(index>>16); msg[35]=(uchar)(index>>24);
@@ -84,7 +84,7 @@ inline uint from_oracle(const uchar seed_le[32], uint index) {
     return cand % MOD;
 }
 
-inline void derive_noise_seed(uchar tag0, uchar tag1, uchar tag2, uchar tag3, uchar tag4, uchar tag5,
+static inline void derive_noise_seed(uchar tag0, uchar tag1, uchar tag2, uchar tag3, uchar tag4, uchar tag5,
                             uchar tag6, uchar tag7, uchar tag8, uchar tag9, uchar tag10, uchar tag11,
                             uchar tag12, uchar tag13, uchar tag14, uchar tag15, uchar tag16, uchar tag17,
                             const uchar sigma_le[32], uchar out_le[32]) {
@@ -98,27 +98,27 @@ inline void derive_noise_seed(uchar tag0, uchar tag1, uchar tag2, uchar tag3, uc
     for (int i = 0; i < 32; ++i) out_le[i] = hash[31-i];
 }
 
-inline uint mat_at_g(__global const uint* m, uint stride, uint row, uint col) {
+static inline uint mat_at_g(__global const uint* m, uint stride, uint row, uint col) {
     return m[(ulong)row * stride + col];
 }
-inline uint mat_at_p(const uint* m, uint stride, uint row, uint col) {
+static inline uint mat_at_p(const uint* m, uint stride, uint row, uint col) {
     return m[(ulong)row * stride + col];
 }
 
-inline uint oracle_el(const uchar seed[32], uint row, uint col) {
+static inline uint oracle_el(const uchar seed[32], uint row, uint col) {
     return from_oracle(seed, row * NOISE_R + col);
 }
-inline uint oracle_er(const uchar seed[32], uint row, uint col) {
+static inline uint oracle_er(const uchar seed[32], uint row, uint col) {
     return from_oracle(seed, row * MATRIX_N + col);
 }
-inline uint oracle_fl(const uchar seed[32], uint row, uint col) {
+static inline uint oracle_fl(const uchar seed[32], uint row, uint col) {
     return from_oracle(seed, row * NOISE_R + col);
 }
-inline uint oracle_fr(const uchar seed[32], uint row, uint col) {
+static inline uint oracle_fr(const uchar seed[32], uint row, uint col) {
     return from_oracle(seed, row * MATRIX_N + col);
 }
 
-inline uint compress_af_priv(__global const uint* A, const uchar seed_fl[32], const uchar seed_fr[32],
+static inline uint compress_af_priv(__global const uint* A, const uchar seed_fl[32], const uchar seed_fr[32],
                              uint bi, uint ell, uint bj, const uint* cv, uint n, uint b, uint r) {
     uint weighted_v[128];
     for (uint x = 0; x < b; ++x) {
@@ -141,7 +141,7 @@ inline uint compress_af_priv(__global const uint* A, const uchar seed_fl[32], co
     return scalar;
 }
 
-inline uint compress_eb_priv(const uchar seed_el[32], const uchar seed_er[32], __global const uint* B,
+static inline uint compress_eb_priv(const uchar seed_el[32], const uchar seed_er[32], __global const uint* B,
                              uint bi, uint ell, uint bj, const uint* cv, uint n, uint b, uint r) {
     uint weighted_v[64];
     for (uint u = 0; u < r; ++u) {
@@ -164,7 +164,7 @@ inline uint compress_eb_priv(const uchar seed_el[32], const uchar seed_er[32], _
     return scalar;
 }
 
-inline uint compress_ef_priv(const uchar seed_el[32], const uchar seed_er[32], const uchar seed_fl[32],
+static inline uint compress_ef_priv(const uchar seed_el[32], const uchar seed_er[32], const uchar seed_fl[32],
                              const uchar seed_fr[32], uint bi, uint ell, uint bj, const uint* cv, uint n, uint b, uint r) {
     uint weighted_v[64];
     for (uint u = 0; u < r; ++u) {
@@ -196,12 +196,12 @@ inline uint compress_ef_priv(const uchar seed_el[32], const uchar seed_er[32], c
     return scalar;
 }
 
-inline void sha256_ctx_init(uint st[8]) {
+static inline void sha256_ctx_init(uint st[8]) {
     st[0]=0x6a09e667; st[1]=0xbb67ae85; st[2]=0x3c6ef372; st[3]=0xa54ff53a;
     st[4]=0x510e527f; st[5]=0x9b05688c; st[6]=0x1f83d9ab; st[7]=0x5be0cd19;
 }
 
-inline void sha256_ctx_update(uint st[8], uint w[16], int* wpos, ulong* bitlen, uchar byte) {
+static inline void sha256_ctx_update(uint st[8], uint w[16], int* wpos, ulong* bitlen, uchar byte) {
     w[*wpos>>2] |= (uint)byte << (24u - (uint)(*wpos & 3) * 8u);
     ++(*wpos);
     ++(*bitlen);
@@ -212,7 +212,7 @@ inline void sha256_ctx_update(uint st[8], uint w[16], int* wpos, ulong* bitlen, 
     }
 }
 
-inline void sha256_ctx_final(uint st[8], uint w[16], int wpos, ulong bitlen, uchar out[32]) {
+static inline void sha256_ctx_final(uint st[8], uint w[16], int wpos, ulong bitlen, uchar out[32]) {
     sha256_ctx_update(st, w, &wpos, &bitlen, 0x80);
     while (wpos != 56) sha256_ctx_update(st, w, &wpos, &bitlen, 0);
     w[15] = (uint)(bitlen * 8);
@@ -223,7 +223,7 @@ inline void sha256_ctx_final(uint st[8], uint w[16], int wpos, ulong bitlen, uch
     }
 }
 
-inline int digest_leq_target(const uchar dig_le[32], const uint target[8]) {
+static inline int digest_leq_target(const uchar dig_le[32], const uint target[8]) {
     for (int i = 7; i >= 0; --i) {
         uint d = ((uint)dig_le[i*4]) | ((uint)dig_le[i*4+1]<<8) | ((uint)dig_le[i*4+2]<<16) | ((uint)dig_le[i*4+3]<<24);
         if (d < target[i]) return 1;

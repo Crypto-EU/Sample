@@ -1,0 +1,514 @@
+#include "gpu/gpu_miner.hpp"
+
+#include "crypto/sha256.hpp"
+#include "util/log.hpp"
+
+#define CL_TARGET_OPENCL_VERSION 120
+#ifdef __APPLE__
+#include <OpenCL/opencl.h>
+#else
+#include <CL/cl.h>
+#endif
+
+#include <array>
+#include <cstring>
+#include <fstream>
+#include <sstream>
+#include <stdexcept>
+#include <vector>
+#include <unistd.h>
+
+namespace superhero::gpu {
+namespace {
+
+#define GPU_STEP(msg)                                                                                          \
+    do {                                                                                                       \
+        std::fprintf(stderr, "[BTXMAT GPU] %s\n", msg);                                                        \
+        std::fflush(stderr);                                                                                   \
+    } while (0)
+
+cl_context ctx_handle(void* p) { return *static_cast<cl_context*>(p); }
+cl_command_queue queue_handle(void* p) { return *static_cast<cl_command_queue*>(p); }
+cl_device_id device_handle(void* p) { return *static_cast<cl_device_id*>(p); }
+cl_kernel kernel_handle(void* p) { return *static_cast<cl_kernel*>(p); }
+cl_mem mem_handle(void* p) { return *static_cast<cl_mem*>(p); }
+
+void append_platform_devices(cl_platform_id platform, cl_device_type dtype, std::vector<cl_device_id>& out,
+                             std::string& diag) {
+    char pname[256]{}, pvendor[256]{};
+    clGetPlatformInfo(platform, CL_PLATFORM_NAME, sizeof(pname), pname, nullptr);
+    clGetPlatformInfo(platform, CL_PLATFORM_VENDOR, sizeof(pvendor), pvendor, nullptr);
+
+    cl_uint count = 0;
+    const cl_int err = clGetDeviceIDs(platform, dtype, 0, nullptr, &count);
+    if (err != CL_SUCCESS || count == 0) return;
+
+    const size_t before = out.size();
+    out.resize(before + count);
+    if (clGetDeviceIDs(platform, dtype, count, out.data() + before, nullptr) != CL_SUCCESS) {
+        out.resize(before);
+        return;
+    }
+
+    for (cl_uint i = 0; i < count; ++i) {
+        char dname[256]{}, dvendor[256]{};
+        cl_device_type dt = 0;
+        clGetDeviceInfo(out[before + i], CL_DEVICE_NAME, sizeof(dname), dname, nullptr);
+        clGetDeviceInfo(out[before + i], CL_DEVICE_VENDOR, sizeof(dvendor), dvendor, nullptr);
+        clGetDeviceInfo(out[before + i], CL_DEVICE_TYPE, sizeof(dt), &dt, nullptr);
+        const char* kind = (dt & CL_DEVICE_TYPE_GPU)        ? "GPU"
+                           : (dt & CL_DEVICE_TYPE_ACCELERATOR) ? "ACC"
+                           : (dt & CL_DEVICE_TYPE_CPU)         ? "CPU"
+                                                               : "DEV";
+        diag += std::string("  [") + kind + "] " + pvendor + " / " + pname + ": " + dname + " (" + dvendor + ")\n";
+    }
+}
+
+int device_score(cl_device_id device) {
+    char vendor[256]{};
+    cl_device_type dt = 0;
+    clGetDeviceInfo(device, CL_DEVICE_VENDOR, sizeof(vendor), vendor, nullptr);
+    clGetDeviceInfo(device, CL_DEVICE_TYPE, sizeof(dt), &dt, nullptr);
+
+    if (dt & CL_DEVICE_TYPE_CPU) return -1;
+
+    int score = 0;
+    const std::string v(vendor);
+    if (v.find("AMD") != std::string::npos || v.find("Advanced Micro") != std::string::npos) score += 100;
+    if (dt & CL_DEVICE_TYPE_GPU) score += 10;
+    if (dt & CL_DEVICE_TYPE_ACCELERATOR) score += 5;
+    return score;
+}
+
+cl_device_id pick_gpu(cl_platform_id* out_platform, std::string* error) {
+    cl_uint platform_count = 0;
+    if (clGetPlatformIDs(0, nullptr, &platform_count) != CL_SUCCESS || platform_count == 0) {
+        if (error) {
+            *error = "no OpenCL platform (install amdgpu drivers, check /etc/OpenCL/vendors/amdocl64.icd)";
+        }
+        return nullptr;
+    }
+
+    std::vector<cl_platform_id> platforms(platform_count);
+    clGetPlatformIDs(platform_count, platforms.data(), nullptr);
+
+    std::vector<cl_device_id> candidates;
+    std::string diag = "OpenCL scan:\n";
+    for (cl_platform_id platform : platforms) {
+        append_platform_devices(platform, CL_DEVICE_TYPE_GPU, candidates, diag);
+        append_platform_devices(platform, CL_DEVICE_TYPE_ACCELERATOR, candidates, diag);
+    }
+
+    cl_device_id best = nullptr;
+    cl_platform_id best_platform = nullptr;
+    int best_score = -1;
+
+    for (cl_platform_id platform : platforms) {
+        for (cl_device_type dtype : {CL_DEVICE_TYPE_GPU, CL_DEVICE_TYPE_ACCELERATOR}) {
+            cl_uint count = 0;
+            if (clGetDeviceIDs(platform, dtype, 0, nullptr, &count) != CL_SUCCESS || count == 0) continue;
+            std::vector<cl_device_id> devs(count);
+            if (clGetDeviceIDs(platform, dtype, count, devs.data(), nullptr) != CL_SUCCESS) continue;
+            for (cl_device_id dev : devs) {
+                const int score = device_score(dev);
+                if (score > best_score) {
+                    best_score = score;
+                    best = dev;
+                    best_platform = platform;
+                }
+            }
+        }
+    }
+
+    if (!best) {
+        if (error) {
+            *error = "no OpenCL GPU device\n" + diag +
+                     "Hints: export HSA_OVERRIDE_GFX_VERSION=10.1.0 (RX5700XT) or 10.3.0 (RX6800XT); "
+                     "check clinfo; verify /opt/amdgpu/lib64/libamdocl64.so";
+        }
+        return nullptr;
+    }
+
+    if (out_platform) *out_platform = best_platform;
+    return best;
+}
+
+void write_target_limbs(const crypto::ArithUint256& target, std::array<uint32_t, 8>& out) {
+    const crypto::Uint256 u = target.to_uint256();
+    std::memcpy(out.data(), u.data(), 32);
+}
+
+std::string exe_directory() {
+    char buf[4096];
+    const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0) return {};
+    buf[n] = '\0';
+    const std::string path(buf);
+    const auto pos = path.rfind('/');
+    if (pos == std::string::npos) return {};
+    return path.substr(0, pos);
+}
+
+size_t round_up_work(size_t global, size_t local) {
+    if (local == 0) return global;
+    if (global % local == 0) return global;
+    return ((global / local) + 1) * local;
+}
+
+}  // namespace
+
+GpuMiner& GpuMiner::instance() {
+    static GpuMiner g;
+    return g;
+}
+
+std::string GpuMiner::read_kernel_source() {
+    std::vector<std::string> paths;
+    const std::string edir = exe_directory();
+    if (!edir.empty()) {
+        paths.push_back(edir + "/opencl/btxmat.cl");
+        paths.push_back(edir + "/../opencl/btxmat.cl");
+    }
+    paths.emplace_back("opencl/btxmat.cl");
+    paths.emplace_back("../opencl/btxmat.cl");
+    paths.emplace_back("/hive/miners/custom/btxmat/opencl/btxmat.cl");
+    paths.emplace_back("/hive/custom/btxmat/opencl/btxmat.cl");
+
+    for (const std::string& p : paths) {
+        std::ifstream in(p);
+        if (in) {
+            std::ostringstream ss;
+            ss << in.rdbuf();
+            util::log(util::LogLevel::Info, "OpenCL kernel: %s", p.c_str());
+            return ss.str();
+        }
+    }
+    throw std::runtime_error("btxmat.cl not found (searched next to binary and Hive paths)");
+}
+
+bool GpuMiner::init(std::string* error) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (ready_) return true;
+
+    GPU_STEP("detecting OpenCL GPU");
+    cl_platform_id platform = nullptr;
+    cl_device_id device = pick_gpu(&platform, error);
+    if (!device) {
+        return false;
+    }
+
+    char devname[256]{};
+    clGetDeviceInfo(device, CL_DEVICE_NAME, sizeof(devname), devname, nullptr);
+    device_name_ = devname;
+    cl_device_ = new cl_device_id(device);
+
+    GPU_STEP("creating OpenCL context");
+    cl_int err = 0;
+    cl_context ctx = clCreateContext(nullptr, 1, &device, nullptr, nullptr, &err);
+    if (err != CL_SUCCESS || ctx == nullptr) {
+        if (error) *error = "clCreateContext failed (cl=" + std::to_string(err) + ")";
+        return false;
+    }
+    cl_context_ = new cl_context(ctx);
+
+    GPU_STEP("creating command queue");
+    cl_command_queue queue = clCreateCommandQueue(ctx, device, 0, &err);
+    if (err != CL_SUCCESS || queue == nullptr) {
+        if (error) *error = "clCreateCommandQueue failed (cl=" + std::to_string(err) + ")";
+        return false;
+    }
+    cl_queue_ = new cl_command_queue(queue);
+
+    GPU_STEP("compiling OpenCL kernels");
+    if (!load_kernels(error)) return false;
+
+    ready_ = true;
+    util::log(util::LogLevel::Info, "GPU initialized: %s", device_name_.c_str());
+    return true;
+}
+
+bool GpuMiner::ensure_scratch(size_t scratch_threads, std::string* error) {
+    if (scratch_threads <= scratch_threads_ && buf_scratch_) return true;
+
+    cl_context ctx = ctx_handle(cl_context_);
+    cl_int err = 0;
+    const size_t scratch_bytes = scratch_threads * kScratchWordsPerThread * sizeof(uint32_t);
+
+    if (buf_scratch_) {
+        clReleaseMemObject(mem_handle(buf_scratch_));
+        delete static_cast<cl_mem*>(buf_scratch_);
+        buf_scratch_ = nullptr;
+    }
+
+    cl_mem buf = clCreateBuffer(ctx, CL_MEM_READ_WRITE, scratch_bytes, nullptr, &err);
+    if (err != CL_SUCCESS || buf == nullptr) {
+        if (error) {
+            *error = "clCreateBuffer scratch failed (cl=" + std::to_string(err) +
+                     ", threads=" + std::to_string(scratch_threads) + ")";
+        }
+        return false;
+    }
+    buf_scratch_ = new cl_mem(buf);
+    scratch_threads_ = scratch_threads;
+    util::log(util::LogLevel::Info, "GPU scratch buffer: %zu threads (%zu MB)", scratch_threads,
+              scratch_bytes / (1024 * 1024));
+    return true;
+}
+
+bool GpuMiner::ensure_buffers(size_t scratch_threads, std::string* error) {
+    if (buffers_ready_ && scratch_threads <= scratch_threads_) return true;
+    if (!ready_) {
+        if (error) *error = "GPU not initialized";
+        return false;
+    }
+
+    GPU_STEP("allocating GPU buffers");
+    cl_context ctx = ctx_handle(cl_context_);
+    cl_int err = 0;
+
+    auto create_buf = [&](size_t size, cl_mem_flags flags) -> cl_mem* {
+        cl_mem buf = clCreateBuffer(ctx, flags, size, nullptr, &err);
+        if (err != CL_SUCCESS || buf == nullptr) {
+            throw std::runtime_error("clCreateBuffer failed (cl=" + std::to_string(err) + ", size=" +
+                                     std::to_string(size) + ")");
+        }
+        return new cl_mem(buf);
+    };
+
+    try {
+        if (!buffers_ready_) {
+            constexpr size_t matrix_elems = 512u * 512u;
+            constexpr size_t clean_elems = 32768u * 256u;
+            buf_a_ = create_buf(matrix_elems * sizeof(uint32_t), CL_MEM_READ_WRITE);
+            buf_b_ = create_buf(matrix_elems * sizeof(uint32_t), CL_MEM_READ_WRITE);
+            buf_clean_ = create_buf(clean_elems * sizeof(uint32_t), CL_MEM_READ_WRITE);
+            buf_header_ = create_buf(header_template_.size(), CL_MEM_READ_ONLY);
+            buf_target_ = create_buf(8 * sizeof(uint32_t), CL_MEM_READ_ONLY);
+            buf_found_ = create_buf(sizeof(int), CL_MEM_READ_WRITE);
+            buf_nonce_ = create_buf(sizeof(uint64_t), CL_MEM_READ_WRITE);
+            buf_digest_ = create_buf(32, CL_MEM_READ_WRITE);
+            buffers_ready_ = true;
+        }
+        if (!ensure_scratch(scratch_threads, error)) return false;
+    } catch (const std::exception& e) {
+        if (error) *error = e.what();
+        return false;
+    }
+
+    GPU_STEP("GPU buffers ready");
+    return true;
+}
+
+bool GpuMiner::load_kernels(std::string* error) {
+    std::string source;
+    try {
+        source = read_kernel_source();
+    } catch (const std::exception& e) {
+        if (error) *error = e.what();
+        return false;
+    }
+
+    const char* src = source.c_str();
+    size_t len = source.size();
+    cl_int err = 0;
+    cl_context ctx = ctx_handle(cl_context_);
+    cl_device_id device = device_handle(cl_device_);
+
+    GPU_STEP("clCreateProgramWithSource");
+    cl_program program = clCreateProgramWithSource(ctx, 1, &src, &len, &err);
+    if (err != CL_SUCCESS || program == nullptr) {
+        if (error) *error = "clCreateProgramWithSource failed (cl=" + std::to_string(err) + ")";
+        return false;
+    }
+    cl_program_ = new cl_program(program);
+
+    const char* opts = "-cl-std=CL1.2 -cl-mad-enable";
+    GPU_STEP("clBuildProgram");
+    err = clBuildProgram(program, 1, &device, opts, nullptr, nullptr);
+    if (err != CL_SUCCESS) {
+        size_t log_size = 0;
+        clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 0, nullptr, &log_size);
+        std::vector<char> log(log_size ? log_size : 1);
+        clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, log_size, log.data(), nullptr);
+        if (error) *error = std::string("OpenCL build failed (cl=") + std::to_string(err) + "):\n" + log.data();
+        return false;
+    }
+
+    auto mk = [&](const char* name) -> cl_kernel* {
+        GPU_STEP(name);
+        cl_kernel k = clCreateKernel(program, name, &err);
+        if (err != CL_SUCCESS || k == nullptr) {
+            if (error) *error = std::string("kernel not found: ") + name + " (cl=" + std::to_string(err) + ")";
+            return nullptr;
+        }
+        return new cl_kernel(k);
+    };
+
+    k_build_matrix_ = mk("build_matrix_from_seed");
+    if (!k_build_matrix_) return false;
+    k_build_clean_ = mk("build_clean_block");
+    if (!k_build_clean_) return false;
+    k_mine_ = mk("btxmat_mine");
+    if (!k_mine_) return false;
+    return true;
+}
+
+bool GpuMiner::build_header_template(const matmul::PowState& state) {
+    uint8_t* h = header_template_.data();
+    crypto::write_le32(h + 0, static_cast<uint32_t>(state.version));
+    std::memcpy(h + 4, state.previous_block_hash.data(), 32);
+    std::memcpy(h + 36, state.merkle_root.data(), 32);
+    crypto::write_le32(h + 68, state.time);
+    crypto::write_le32(h + 72, state.bits);
+    std::memset(h + 76, 0, 8);
+    crypto::write_le16(h + 84, state.matmul_dim);
+    std::memcpy(h + 86, state.seed_a.data(), 32);
+    std::memcpy(h + 118, state.seed_b.data(), 32);
+    return true;
+}
+
+bool GpuMiner::prepare_job(const matmul::PowState& state, const matmul::PowConfig& config, std::string* error) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!ready_ && !init(error)) return false;
+
+    const size_t scratch_threads = round_up_work(default_batch_, workgroup_size_);
+    if (!ensure_buffers(scratch_threads, error)) return false;
+
+    build_header_template(state);
+    const crypto::ArithUint256& tgt = config.target;
+    write_target_limbs(tgt, target_limbs_);
+
+    cl_command_queue queue = queue_handle(cl_queue_);
+    cl_context ctx = ctx_handle(cl_context_);
+    cl_int err = 0;
+
+    clEnqueueWriteBuffer(queue, mem_handle(buf_header_), CL_TRUE, 0, header_template_.size(),
+                         header_template_.data(), 0, nullptr, nullptr);
+    clEnqueueWriteBuffer(queue, mem_handle(buf_target_), CL_TRUE, 0, 32, target_limbs_.data(), 0, nullptr,
+                         nullptr);
+
+    const uint32_t n = config.n;
+    const uint32_t b = config.b;
+
+    cl_mem buf_a = mem_handle(buf_a_);
+    cl_mem buf_b = mem_handle(buf_b_);
+    cl_mem buf_clean = mem_handle(buf_clean_);
+
+    cl_mem seed_a_buf = clCreateBuffer(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, 32,
+                                       const_cast<uint8_t*>(state.seed_a.data()), &err);
+    cl_kernel km = kernel_handle(k_build_matrix_);
+    clSetKernelArg(km, 0, sizeof(cl_mem), &seed_a_buf);
+    clSetKernelArg(km, 1, sizeof(cl_mem), &buf_a);
+    clSetKernelArg(km, 2, sizeof(uint32_t), &n);
+    size_t g = n * n;
+    clEnqueueNDRangeKernel(queue, km, 1, nullptr, &g, nullptr, 0, nullptr, nullptr);
+
+    cl_mem seed_b_buf = clCreateBuffer(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, 32,
+                                       const_cast<uint8_t*>(state.seed_b.data()), &err);
+    clSetKernelArg(km, 0, sizeof(cl_mem), &seed_b_buf);
+    clSetKernelArg(km, 1, sizeof(cl_mem), &buf_b);
+    clEnqueueNDRangeKernel(queue, km, 1, nullptr, &g, nullptr, 0, nullptr, nullptr);
+
+    cl_kernel kc = kernel_handle(k_build_clean_);
+    clSetKernelArg(kc, 0, sizeof(cl_mem), &buf_a);
+    clSetKernelArg(kc, 1, sizeof(cl_mem), &buf_b);
+    clSetKernelArg(kc, 2, sizeof(cl_mem), &buf_clean);
+    clSetKernelArg(kc, 3, sizeof(uint32_t), &n);
+    clSetKernelArg(kc, 4, sizeof(uint32_t), &b);
+    size_t blocks = 32u * 32u * 32u;
+    clEnqueueNDRangeKernel(queue, kc, 1, nullptr, &blocks, nullptr, 0, nullptr, nullptr);
+    clFinish(queue);
+
+    clReleaseMemObject(seed_a_buf);
+    clReleaseMemObject(seed_b_buf);
+    return true;
+}
+
+matmul::SolveResult GpuMiner::mine_batch(
+    const matmul::PowState& state,
+    const matmul::PowConfig& config,
+    uint64_t nonce_start,
+    uint64_t batch_size,
+    const crypto::ArithUint256* share_target) {
+    (void)state;
+    (void)config;
+    matmul::SolveResult result{};
+    result.tries = batch_size;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!ready_) return result;
+
+    const size_t global = round_up_work(batch_size, workgroup_size_);
+    if (!ensure_buffers(global, nullptr)) return result;
+
+    if (share_target) write_target_limbs(*share_target, target_limbs_);
+
+    cl_command_queue queue = queue_handle(cl_queue_);
+    int found_zero = 0;
+    uint64_t found_nonce = 0;
+    std::array<uint8_t, 32> found_digest{};
+
+    clEnqueueWriteBuffer(queue, mem_handle(buf_target_), CL_TRUE, 0, 32, target_limbs_.data(), 0, nullptr,
+                         nullptr);
+    clEnqueueWriteBuffer(queue, mem_handle(buf_found_), CL_TRUE, 0, sizeof(int), &found_zero, 0, nullptr,
+                         nullptr);
+
+    cl_kernel km = kernel_handle(k_mine_);
+    cl_mem ma = mem_handle(buf_a_);
+    cl_mem mb = mem_handle(buf_b_);
+    cl_mem mc = mem_handle(buf_clean_);
+    cl_mem mh = mem_handle(buf_header_);
+    cl_mem mt = mem_handle(buf_target_);
+    cl_mem ms = mem_handle(buf_scratch_);
+    clSetKernelArg(km, 0, sizeof(cl_mem), &ma);
+    clSetKernelArg(km, 1, sizeof(cl_mem), &mb);
+    clSetKernelArg(km, 2, sizeof(cl_mem), &mc);
+    clSetKernelArg(km, 3, sizeof(cl_mem), &mh);
+    clSetKernelArg(km, 4, sizeof(cl_mem), &mt);
+    clSetKernelArg(km, 5, sizeof(uint64_t), &nonce_start);
+
+    cl_mem found_buf = mem_handle(buf_found_);
+    cl_mem nonce_buf = mem_handle(buf_nonce_);
+    cl_mem digest_buf = mem_handle(buf_digest_);
+    clSetKernelArg(km, 6, sizeof(cl_mem), &found_buf);
+    clSetKernelArg(km, 7, sizeof(cl_mem), &nonce_buf);
+    clSetKernelArg(km, 8, sizeof(cl_mem), &digest_buf);
+    clSetKernelArg(km, 9, sizeof(cl_mem), &ms);
+
+    size_t local = workgroup_size_;
+    clEnqueueNDRangeKernel(queue, km, 1, nullptr, &global, &local, 0, nullptr, nullptr);
+    clFinish(queue);
+
+    int found_flag = 0;
+    clEnqueueReadBuffer(queue, found_buf, CL_TRUE, 0, sizeof(int), &found_flag, 0, nullptr, nullptr);
+    if (found_flag) {
+        clEnqueueReadBuffer(queue, nonce_buf, CL_TRUE, 0, sizeof(uint64_t), &found_nonce, 0, nullptr, nullptr);
+        clEnqueueReadBuffer(queue, digest_buf, CL_TRUE, 0, 32, found_digest.data(), 0, nullptr, nullptr);
+        result.found = true;
+        result.nonce = found_nonce;
+        result.digest = crypto::Uint256(found_digest);
+    }
+    result.nonce = nonce_start + batch_size;
+    return result;
+}
+
+bool gpu_available() {
+    std::string err;
+    return GpuMiner::instance().init(&err);
+}
+
+std::string gpu_device_name() {
+    GpuMiner::instance().init();
+    return GpuMiner::instance().device_name();
+}
+
+matmul::SolveResult gpu_mine_batch(
+    const matmul::PowState& state,
+    const matmul::PowConfig& config,
+    uint64_t nonce_start,
+    uint64_t batch_size,
+    const crypto::ArithUint256* share_target) {
+    return GpuMiner::instance().mine_batch(state, config, nonce_start, batch_size, share_target);
+}
+
+}  // namespace superhero::gpu

@@ -10,8 +10,10 @@ cmake -S "$ROOT" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release
 cmake --build "$BUILD" -j"$(nproc)"
 
 mkdir -p "$PKG/superhero"
+rm -rf "$PKG/superhero"
+mkdir -p "$PKG/superhero/opencl"
 cp "$BUILD/superhero" "$PKG/superhero/"
-cp -r "$ROOT/opencl" "$PKG/superhero/"
+cp "$ROOT/opencl/superhero.cl" "$PKG/superhero/opencl/"
 cp "$ROOT/hiveos/"* "$PKG/superhero/"
 chmod +x "$PKG/superhero/"*.sh "$PKG/superhero/superhero"
 

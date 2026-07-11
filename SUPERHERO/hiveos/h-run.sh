@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 # SUPERHERO HiveOS run script (GPU-only)
 
-MINER_DIR="${MINER_DIR:-$(cd "$(dirname "$0")" && pwd)}"
-cd "$MINER_DIR" || exit 1
+set -euo pipefail
 
-CONF="$MINER_DIR/config.conf"
+MINER_PATH="$(cd "$(dirname "$0")" && pwd)"
+cd "$MINER_PATH" || exit 1
+
+# shellcheck source=/dev/null
+. "${MINER_PATH}/h-manifest.conf"
+
+config_file="${CUSTOM_CONFIG_FILENAME:-config.conf}"
+[[ "$config_file" = /* ]] || config_file="${MINER_PATH}/${config_file}"
+
 POOL="${POOL:-stratum.minebtx.com:3333}"
 WALLET="${WALLET:-}"
 WORKER="${WORKER:-$(hostname -s)}"
@@ -13,24 +20,23 @@ BATCH="${BATCH:-262144}"
 WORKGROUP="${WORKGROUP:-256}"
 EXTRA_ARGS=""
 
-if [[ -f "$CONF" ]]; then
+if [[ -f "$config_file" ]]; then
     # shellcheck disable=SC1090
-    source "$CONF"
+    source "$config_file"
 fi
 
 IFS=':' read -r POOL_HOST POOL_PORT <<< "$POOL"
 
 if [[ -z "$WALLET" ]]; then
-    echo "SUPERHERO FATAL: wallet is empty - set wallet in Hive flight sheet (CUSTOM_TEMPLATE)"
+    echo "SUPERHERO FATAL: wallet is empty - set CUSTOM_TEMPLATE to %WAL%.%WORKER_NAME% in flight sheet"
     exit 1
 fi
 
 if [[ -z "$POOL_HOST" || -z "$POOL_PORT" ]]; then
-    echo "SUPERHERO FATAL: pool is empty or invalid ($POOL) - check CUSTOM_URL in flight sheet"
+    echo "SUPERHERO FATAL: pool is empty or invalid ($POOL) - set CUSTOM_URL in flight sheet"
     exit 1
 fi
 
-# AMD OpenCL runtime on HiveOS
 for libdir in \
     /opt/amdgpu/lib64 \
     /opt/amdgpu-pro/lib/x86_64-linux-gnu \
@@ -61,6 +67,9 @@ if [[ -n "$EXTRA_ARGS" ]]; then
     ARGS+=("${EXTRA_ARR[@]}")
 fi
 
+LOG="${CUSTOM_LOG_BASENAME:-${MINER_PATH}/h-run}.log"
+mkdir -p "$(dirname "$LOG")"
+
 echo "SUPERHERO starting pool=${POOL_HOST}:${POOL_PORT} wallet=$WALLET worker=$WORKER"
 
-exec ./superhero "${ARGS[@]}" 2>&1 | tee -a "$MINER_DIR/h-run.log"
+exec ./"${CUSTOM_MINERBIN:-superhero}" "${ARGS[@]}" 2>&1 | tee -a "$LOG"

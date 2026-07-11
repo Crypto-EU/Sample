@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
-# SUPERHERO HiveOS configuration generator (sourced by /hive/bin/custom)
+# SUPERHERO HiveOS config generator (sourced by /hive/bin/custom)
+
+set -euo pipefail
+
+MINER_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+. "${MINER_PATH}/h-manifest.conf"
+
+config_file="${CUSTOM_CONFIG_FILENAME:-config.conf}"
+[[ "$config_file" = /* ]] || config_file="${MINER_PATH}/${config_file}"
 
 POOL_HOST=""
 POOL_PORT=""
@@ -9,7 +18,6 @@ PASS="${CUSTOM_PASS:-x}"
 BATCH=""
 EXTRA_ARGS="${CUSTOM_USER_CONFIG:-}"
 
-# Hive flight sheet variables (available when sourced)
 if [[ -n "${CUSTOM_URL:-}" ]]; then
     pool_url="${CUSTOM_URL#stratum+tcp://}"
     pool_url="${pool_url#stratum+ssl://}"
@@ -25,7 +33,6 @@ if [[ -n "${CUSTOM_TEMPLATE:-}" ]]; then
     fi
 fi
 
-# Manual / test overrides via CLI
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --pool) IFS=':' read -r POOL_HOST POOL_PORT <<< "$2"; shift 2 ;;
@@ -39,9 +46,7 @@ done
 
 [[ -z "$WORKER" ]] && WORKER="${WORKER_NAME:-$(hostname -s)}"
 
-MINER_DIR="${MINER_DIR:-/hive/miners/custom/superhero}"
-mkdir -p "$MINER_DIR"
-CONF="$MINER_DIR/config.conf"
+mkdir -p "$(dirname "$config_file")"
 {
     echo "# SUPERHERO flight sheet config"
     echo "POOL=${POOL_HOST}:${POOL_PORT}"
@@ -50,6 +55,6 @@ CONF="$MINER_DIR/config.conf"
     echo "PASS=$PASS"
     [[ -n "$BATCH" ]] && echo "BATCH=$BATCH"
     [[ -n "$EXTRA_ARGS" ]] && echo "EXTRA_ARGS=$EXTRA_ARGS"
-} > "$CONF"
+} > "$config_file"
 
-echo "Generated $CONF (pool=${POOL_HOST}:${POOL_PORT} wallet=$WALLET worker=$WORKER)"
+echo "Generated $config_file (pool=${POOL_HOST}:${POOL_PORT} wallet=$WALLET worker=$WORKER)"

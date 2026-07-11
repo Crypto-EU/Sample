@@ -3,8 +3,12 @@ set -euo pipefail
 
 VERSION="${1:-0.1.0}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD="$ROOT/build"
+BUILD="${SUPERHERO_BUILD_DIR:-$ROOT/build}"
 PKG="$ROOT/dist"
+
+if [[ "${HIVEOS_BUILD:-1}" == "1" ]]; then
+    exec "$ROOT/scripts/build-hiveos.sh" "$VERSION"
+fi
 
 cmake -S "$ROOT" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release
 cmake --build "$BUILD" -j"$(nproc)"

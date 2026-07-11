@@ -1,0 +1,25 @@
+# Build SUPERHERO binary compatible with HiveOS (glibc 2.31 / Ubuntu 20.04)
+FROM ubuntu:20.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    g++-10 \
+    opencl-headers \
+    ocl-icd-opencl-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-10 100 \
+    && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-10 100
+
+WORKDIR /src
+COPY . .
+
+RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build build -j"$(nproc)" --target superhero
+
+# Print linked library requirements for verification
+RUN echo "=== GLIBC requirements ===" \
+    && objdump -T build/superhero | grep GLIBC | sed 's/.*GLIBC_/GLIBC_/' | sort -u

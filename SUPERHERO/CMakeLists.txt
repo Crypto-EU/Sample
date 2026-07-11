@@ -28,6 +28,7 @@ set(SUPERHERO_SOURCES
 add_executable(superhero ${SUPERHERO_SOURCES})
 target_include_directories(superhero PRIVATE src)
 target_link_libraries(superhero PRIVATE Threads::Threads OpenCL::OpenCL)
+target_link_options(superhero PRIVATE -static-libstdc++ -static-libgcc)
 target_compile_definitions(superhero PRIVATE SUPERHERO_GPU_ONLY=1)
 target_compile_options(superhero PRIVATE -O3 -Wall -Wextra)
 

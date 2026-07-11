@@ -14,24 +14,30 @@ BTX MatMul PoW: M31 field, n=512, b=16, r=8. Per nonce: sigma → noise → tran
 
 ## Build
 
+Requires OpenCL headers. **HiveOS releases** use an old-glibc toolchain automatically:
+
+```bash
+cd SUPERHERO && ./scripts/build-hiveos.sh 0.2.4
+```
+
+Local dev build (needs GPU/OpenCL at runtime):
+
 ```bash
 sudo apt install build-essential cmake g++ opencl-headers ocl-icd-opencl-dev
-cd SUPERHERO && ./scripts/build-release.sh 0.2.0
+HIVEOS_BUILD=0 ./scripts/build-release.sh
 ```
 
-## HiveOS (RX 6800 XT)
+## HiveOS (AMD RX 5700 XT / 6800 XT)
 
-Tarball: `superhero-0.2.0.tar.gz` from [GitHub Releases](https://github.com/Crypto-EU/Sample/releases)
+Tarball: `superhero-0.2.4.tar.gz` from [GitHub Releases](https://github.com/Crypto-EU/Sample/releases)
 
-```bash
-export HSA_OVERRIDE_GFX_VERSION=10.3.0
-export GPU_MAX_ALLOC_PERCENT=100
+```
+https://github.com/Crypto-EU/Sample/releases/download/superhero-v0.2.4/superhero-0.2.4.tar.gz
 ```
 
-Flight sheet custom miner URL:
-```
-https://github.com/Crypto-EU/Sample/releases/download/superhero-v0.2.0/superhero-0.2.0.tar.gz
-```
+Flight sheet: miner name `superhero`, wallet template `%WAL%.%WORKER_NAME%`, extra args empty.
+
+`HSA_OVERRIDE_GFX_VERSION=10.3.0` is set automatically for RDNA2 in `h-run.sh`.
 
 ### Tuning
 

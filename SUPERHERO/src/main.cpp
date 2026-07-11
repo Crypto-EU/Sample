@@ -1,4 +1,5 @@
 #include "stratum/client.hpp"
+#include "gpu/gpu_miner.hpp"
 #include "matmul/solver.hpp"
 #include "util/hex.hpp"
 #include "util/log.hpp"
@@ -9,22 +10,23 @@
 #include <iostream>
 #include <string>
 #include <thread>
-#include <vector>
 
 static void print_usage() {
     std::fprintf(stderr,
-        "SUPERHERO - BTX (btx-matmul) AMD miner for HiveOS\n\n"
+        "SUPERHERO v0.2.0 - BTX (btx-matmul) GPU-only AMD miner for HiveOS\n\n"
         "Usage:\n"
         "  superhero --pool HOST:PORT --wallet WALLET [options]\n"
-        "  superhero --benchmark [--threads N]\n"
+        "  superhero --benchmark [--batch-size N]\n"
         "  superhero --self-test\n\n"
         "Options:\n"
         "  --worker NAME        Worker suffix (default: rig)\n"
-        "  --threads N          CPU threads (default: auto)\n"
-        "  --batch-size N       Nonces per mining round (default: 500000)\n"
-        "  --no-opencl          Disable OpenCL backend\n"
+        "  --batch-size N       GPU nonces per kernel launch (default: 262144)\n"
+        "  --workgroup N        OpenCL workgroup size (default: 256)\n"
         "  --password PASS      Pool password (default: x)\n"
         "  -v                   Verbose logging\n\n"
+        "GPU env (AMD RX 6800 XT):\n"
+        "  export HSA_OVERRIDE_GFX_VERSION=10.3.0\n"
+        "  export GPU_MAX_ALLOC_PERCENT=100\n\n"
         "Pools:\n"
         "  minebtx: stratum.minebtx.com:3333\n"
         "  SRBMiner-style: btx-eu.lproute.com:8660\n");
@@ -42,7 +44,15 @@ static bool parse_host_port(const std::string& spec, std::string& host, int& por
     return !host.empty() && port > 0;
 }
 
-static int run_benchmark(uint32_t threads) {
+static int run_benchmark(uint64_t batch_size) {
+    std::string err;
+    auto& gpu = superhero::gpu::GpuMiner::instance();
+    if (!gpu.init(&err)) {
+        std::fprintf(stderr, "GPU init failed: %s\n", err.c_str());
+        return 1;
+    }
+    gpu.set_batch_size(batch_size);
+
     superhero::matmul::PowState state{};
     state.version = 0x20000000;
     state.seed_a = *superhero::crypto::Uint256::from_hex(
@@ -58,25 +68,16 @@ static int run_benchmark(uint32_t threads) {
     config.r = 8;
     config.target = superhero::matmul::target_from_bits(state.bits);
 
-    const auto job = superhero::matmul::prepare_job(state, config);
-    const uint64_t batch = 100;
-    const auto start = std::chrono::steady_clock::now();
-
-    std::atomic<uint64_t> total{0};
-    std::vector<std::thread> workers;
-    for (uint32_t t = 0; t < threads; ++t) {
-        workers.emplace_back([&, t] {
-            superhero::matmul::PowState local = state;
-            const uint64_t nonce_start = static_cast<uint64_t>(t) * batch;
-            auto result = superhero::matmul::solve_range(local, config, job, nonce_start, batch, nullptr, nullptr);
-            total += result.tries;
-        });
+    if (!gpu.prepare_job(state, config, &err)) {
+        std::fprintf(stderr, "GPU job prep failed: %s\n", err.c_str());
+        return 1;
     }
-    for (auto& w : workers) w.join();
 
+    const auto start = std::chrono::steady_clock::now();
+    auto result = gpu.mine_batch(state, config, 0, batch_size, nullptr);
     const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-    std::printf("Benchmark: %llu hashes in %.2fs => %.2f H/s (%u threads)\n",
-                static_cast<unsigned long long>(total.load()), sec, total.load() / sec, threads);
+    std::printf("GPU Benchmark [%s]: %llu hashes in %.2fs => %.2f H/s\n", gpu.device_name().c_str(),
+                static_cast<unsigned long long>(result.tries), sec, result.tries / sec);
     return 0;
 }
 
@@ -98,8 +99,6 @@ int main(int argc, char** argv) {
             benchmark = true;
         } else if (arg == "--self-test") {
             self_test = true;
-        } else if (arg == "--no-opencl") {
-            cfg.use_opencl = false;
         } else if (arg == "--pool" && i + 1 < argc) {
             if (!parse_host_port(argv[++i], cfg.pool_host, cfg.pool_port)) {
                 std::fprintf(stderr, "invalid --pool value\n");
@@ -109,10 +108,10 @@ int main(int argc, char** argv) {
             cfg.wallet = argv[++i];
         } else if (arg == "--worker" && i + 1 < argc) {
             cfg.worker_name = argv[++i];
-        } else if (arg == "--threads" && i + 1 < argc) {
-            cfg.threads = static_cast<uint32_t>(std::stoul(argv[++i]));
         } else if (arg == "--batch-size" && i + 1 < argc) {
             cfg.batch_size = std::stoull(argv[++i]);
+        } else if (arg == "--workgroup" && i + 1 < argc) {
+            cfg.workgroup_size = static_cast<uint32_t>(std::stoul(argv[++i]));
         } else if (arg == "--password" && i + 1 < argc) {
             cfg.password = argv[++i];
         } else {
@@ -123,12 +122,11 @@ int main(int argc, char** argv) {
     }
 
     if (self_test) {
-        std::printf("Run build target superhero-test for vector validation.\n");
+        std::printf("Run build target superhero-test for CPU vector validation.\n");
         return 0;
     }
 
-    const uint32_t threads = cfg.threads ? cfg.threads : std::max(1u, std::thread::hardware_concurrency());
-    if (benchmark) return run_benchmark(threads);
+    if (benchmark) return run_benchmark(cfg.batch_size);
 
     if (cfg.wallet.empty()) {
         std::fprintf(stderr, "error: --wallet is required for mining\n");
@@ -136,7 +134,14 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::fprintf(stderr, "SUPERHERO v0.1.0 | BTX btx-matmul | threads=%u | pool=%s:%d\n",
-                 threads, cfg.pool_host.c_str(), cfg.pool_port);
+    std::string err;
+    if (!superhero::gpu::GpuMiner::instance().init(&err)) {
+        std::fprintf(stderr, "FATAL: GPU required — %s\n", err.c_str());
+        return 1;
+    }
+
+    std::fprintf(stderr, "SUPERHERO v0.2.0 GPU-only | %s | batch=%llu | pool=%s:%d\n",
+                 superhero::gpu::GpuMiner::instance().device_name().c_str(),
+                 static_cast<unsigned long long>(cfg.batch_size), cfg.pool_host.c_str(), cfg.pool_port);
     return superhero::stratum::run_miner(cfg);
 }

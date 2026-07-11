@@ -1,13 +1,10 @@
 #include "stratum/client.hpp"
 
 #include "crypto/uint256.hpp"
+#include "gpu/gpu_miner.hpp"
 #include "stratum/json.hpp"
 #include "util/hex.hpp"
 #include "util/log.hpp"
-
-#if defined(SUPERHERO_HAVE_OPENCL)
-#include "gpu/opencl_backend.hpp"
-#endif
 
 #include <arpa/inet.h>
 #include <chrono>
@@ -29,8 +26,12 @@ std::string worker_name(const MinerConfig& cfg) {
 }  // namespace
 
 StratumClient::StratumClient(MinerConfig config) : config_(std::move(config)) {
-    if (config_.threads == 0) {
-        config_.threads = std::max(1u, std::thread::hardware_concurrency());
+    std::string err;
+    if (!gpu::GpuMiner::instance().init(&err)) {
+        util::log(util::LogLevel::Error, "GPU init failed: %s", err.c_str());
+    } else {
+        gpu::GpuMiner::instance().set_batch_size(config_.batch_size);
+        gpu::GpuMiner::instance().set_workgroup_size(config_.workgroup_size);
     }
 }
 
@@ -184,7 +185,13 @@ void StratumClient::handle_notify(const std::vector<JsonValue>& params) {
         current_parent_ = json_string(params[2]);
     }
 
-    job_ctx_ = std::make_unique<matmul::JobContext>(matmul::prepare_job(current_state_, pow_config_));
+    std::string err;
+    if (!gpu::GpuMiner::instance().prepare_job(current_state_, pow_config_, &err)) {
+        util::log(util::LogLevel::Error, "GPU job prep failed: %s", err.c_str());
+        gpu_job_ready_ = false;
+        return;
+    }
+    gpu_job_ready_ = true;
     has_job_ = true;
     util::log(util::LogLevel::Info, "new job %s prev=%s...", job_id_.c_str(), current_parent_.substr(0, 16).c_str());
 }
@@ -209,47 +216,16 @@ void StratumClient::handle_message(const JsonValue& msg) {
 }
 
 void StratumClient::mine_job() {
-    if (!has_job_ || !job_ctx_) return;
+    if (!has_job_ || !gpu_job_ready_) return;
+    if (!gpu::GpuMiner::instance().available()) return;
 
     const auto share_target = share_target_hex_.empty()
         ? std::optional<crypto::ArithUint256>{}
         : std::optional<crypto::ArithUint256>{matmul::target_from_hex(share_target_hex_)};
 
     const auto start = std::chrono::steady_clock::now();
-    matmul::SolveResult result{};
-
-#if defined(SUPERHERO_HAVE_OPENCL)
-    if (config_.use_opencl) {
-        result = gpu::solve_opencl_batch(current_state_, pow_config_, *job_ctx_, nonce_start_, config_.batch_size,
-                                         share_target ? &*share_target : nullptr);
-    } else
-#endif
-    {
-        std::vector<std::thread> workers;
-        std::atomic<bool> found{false};
-        std::atomic<uint64_t> total_tries{0};
-        std::mutex result_mu;
-        matmul::SolveResult best{};
-        const uint64_t per_thread = config_.batch_size / config_.threads;
-
-        for (uint32_t t = 0; t < config_.threads; ++t) {
-            workers.emplace_back([&, t] {
-                matmul::PowState local = current_state_;
-                const uint64_t start_nonce = nonce_start_ + static_cast<uint64_t>(t) * per_thread;
-                auto partial = matmul::solve_range(local, pow_config_, *job_ctx_, start_nonce, per_thread,
-                                                   share_target ? &*share_target : nullptr, &found);
-                total_tries += partial.tries;
-                if (partial.found) {
-                    found.store(true);
-                    std::lock_guard<std::mutex> lock(result_mu);
-                    best = partial;
-                }
-            });
-        }
-        for (auto& w : workers) w.join();
-        result = best;
-        result.tries = total_tries.load();
-    }
+    auto result = gpu::gpu_mine_batch(current_state_, pow_config_, nonce_start_, config_.batch_size,
+                                      share_target ? &*share_target : nullptr);
 
     const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     if (elapsed > 0) stats_.hashrate.store(result.tries / elapsed);

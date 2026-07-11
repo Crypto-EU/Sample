@@ -17,9 +17,8 @@ struct MinerConfig {
     std::string wallet;
     std::string worker_name{"rig"};
     std::string password;
-    uint32_t threads{0};
-    uint64_t batch_size{500000};
-    bool use_opencl{true};
+    uint64_t batch_size{262144};
+    uint32_t workgroup_size{256};
 };
 
 struct MinerStats {
@@ -64,7 +63,7 @@ private:
     std::string current_parent_;
     uint64_t nonce_start_{0};
     bool has_job_{false};
-    std::unique_ptr<matmul::JobContext> job_ctx_;
+    bool gpu_job_ready_{false};
 };
 
 int run_miner(const MinerConfig& config);

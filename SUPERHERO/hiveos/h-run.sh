@@ -3,7 +3,15 @@
 
 set -euo pipefail
 
-MINER_PATH="$(cd "$(dirname "$0")" && pwd)"
+# Resolve install dir even if previous cwd was deleted (Hive custom-get update)
+_script="${BASH_SOURCE[0]}"
+while [[ -L "$_script" ]]; do
+    _link_dir="$(cd "$(dirname "$_script")" && pwd)"
+    _script="$(readlink "$_script")"
+    [[ "$_script" != /* ]] && _script="$_link_dir/$_script"
+done
+cd / 2>/dev/null || cd /tmp
+MINER_PATH="$(cd "$(dirname "$_script")" && pwd)"
 cd "$MINER_PATH" || exit 1
 
 # shellcheck source=/dev/null
@@ -45,14 +53,12 @@ if [[ -z "$WALLET" ]]; then
 fi
 
 if [[ -z "$POOL_HOST" || -z "$POOL_PORT" ]]; then
-    echo "SUPERHERO FATAL: pool is empty or invalid ($POOL) - set CUSTOM_URL in flight sheet"
+    echo "SUPERHERO FATAL: pool is empty or invalid ($POOL) - check CUSTOM_URL in flight sheet"
     exit 1
 fi
 
-# --- AMD OpenCL runtime (HiveOS) ---
 export OPENCL_VENDOR_PATH="${OPENCL_VENDOR_PATH:-/etc/OpenCL/vendors}"
 
-# AMD OpenCL ICD library paths (libamdocl64.so)
 for amdcl in \
     /opt/amdgpu/lib64/libamdocl64.so \
     /opt/amdgpu-pro/lib/x86_64-linux-gnu/libamdocl64.so \
@@ -75,18 +81,9 @@ for libdir in \
     fi
 done
 
-# HSA override: set per GPU in Hive rig env vars (do NOT force wrong version)
-# RX 5700 XT (gfx1010): HSA_OVERRIDE_GFX_VERSION=10.1.0
-# RX 6800 XT (gfx1030): HSA_OVERRIDE_GFX_VERSION=10.3.0
 export GPU_MAX_ALLOC_PERCENT="${GPU_MAX_ALLOC_PERCENT:-100}"
 export GPU_MAX_HEAP_SIZE="${GPU_MAX_HEAP_SIZE:-100}"
-export GPU_FORCE_64BIT_PTR="${GPU_FORCE_64BIT_PTR:-1}"
-export GPU_USE_SYNC_OBJECTS="${GPU_USE_SYNC_OBJECTS:-1}"
-
-if [[ -z "${HSA_OVERRIDE_GFX_VERSION:-}" ]]; then
-    echo "SUPERHERO note: set HSA_OVERRIDE_GFX_VERSION in rig env if GPU not detected"
-    echo "  RX 5700 XT -> 10.1.0   |   RX 6800 XT -> 10.3.0"
-fi
+# Do NOT set GPU_FORCE_64BIT_PTR — causes segfaults on some AMD OpenCL stacks
 
 ARGS=(
     --pool "${POOL_HOST}:${POOL_PORT}"
@@ -106,9 +103,12 @@ fi
 LOG="${CUSTOM_LOG_BASENAME:-${MINER_PATH}/h-run}.log"
 mkdir -p "$(dirname "$LOG")"
 
+MINER_BIN="${MINER_PATH}/${CUSTOM_MINERBIN:-superhero}"
+
 echo "SUPERHERO starting pool=${POOL_HOST}:${POOL_PORT} wallet=$WALLET worker=$WORKER"
+echo "SUPERHERO dir=${MINER_PATH}"
 if [[ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ]]; then
     echo "SUPERHERO HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION}"
 fi
 
-exec ./"${CUSTOM_MINERBIN:-superhero}" "${ARGS[@]}" 2>&1 | tee -a "$LOG"
+exec "$MINER_BIN" "${ARGS[@]}" 2>&1 | tee -a "$LOG"

@@ -33,16 +33,19 @@ public:
 private:
     GpuMiner() = default;
     bool load_kernels(std::string* error);
+    bool ensure_buffers(std::string* error);
     bool build_header_template(const matmul::PowState& state);
     static std::string read_kernel_source();
 
     bool ready_{false};
+    bool buffers_ready_{false};
     std::string device_name_;
     uint64_t default_batch_{262144};
     uint32_t workgroup_size_{256};
 
     void* cl_context_{nullptr};
     void* cl_queue_{nullptr};
+    void* cl_device_{nullptr};
     void* cl_program_{nullptr};
     void* k_build_matrix_{nullptr};
     void* k_build_clean_{nullptr};

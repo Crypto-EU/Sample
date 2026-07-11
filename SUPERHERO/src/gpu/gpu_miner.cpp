@@ -21,14 +21,17 @@
 namespace superhero::gpu {
 namespace {
 
-#define CL_CHECK(expr, msg)                                                                                    \
+#define GPU_STEP(msg)                                                                                          \
     do {                                                                                                       \
-        const cl_int _err = (expr);                                                                            \
-        if (_err != CL_SUCCESS) {                                                                              \
-            if (error) *error = std::string(msg) + " (cl=" + std::to_string(_err) + ")";                     \
-            return false;                                                                                      \
-        }                                                                                                      \
+        std::fprintf(stderr, "[SUPERHERO GPU] %s\n", msg);                                                     \
+        std::fflush(stderr);                                                                                   \
     } while (0)
+
+cl_context ctx_handle(void* p) { return *static_cast<cl_context*>(p); }
+cl_command_queue queue_handle(void* p) { return *static_cast<cl_command_queue*>(p); }
+cl_device_id device_handle(void* p) { return *static_cast<cl_device_id*>(p); }
+cl_kernel kernel_handle(void* p) { return *static_cast<cl_kernel*>(p); }
+cl_mem mem_handle(void* p) { return *static_cast<cl_mem*>(p); }
 
 void append_platform_devices(cl_platform_id platform, cl_device_type dtype, std::vector<cl_device_id>& out,
                              std::string& diag) {
@@ -181,6 +184,7 @@ bool GpuMiner::init(std::string* error) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (ready_) return true;
 
+    GPU_STEP("detecting OpenCL GPU");
     cl_platform_id platform = nullptr;
     cl_device_id device = pick_gpu(&platform, error);
     if (!device) {
@@ -190,29 +194,51 @@ bool GpuMiner::init(std::string* error) {
     char devname[256]{};
     clGetDeviceInfo(device, CL_DEVICE_NAME, sizeof(devname), devname, nullptr);
     device_name_ = devname;
+    cl_device_ = new cl_device_id(device);
 
+    GPU_STEP("creating OpenCL context");
     cl_int err = 0;
-    auto* ctx = new cl_context(clCreateContext(nullptr, 1, &device, nullptr, nullptr, &err));
-    if (err != CL_SUCCESS) {
-        if (error) *error = "clCreateContext failed";
-        delete ctx;
+    cl_context ctx = clCreateContext(nullptr, 1, &device, nullptr, nullptr, &err);
+    if (err != CL_SUCCESS || ctx == nullptr) {
+        if (error) *error = "clCreateContext failed (cl=" + std::to_string(err) + ")";
         return false;
     }
-    cl_context_ = ctx;
+    cl_context_ = new cl_context(ctx);
 
-    auto* queue = new cl_command_queue(clCreateCommandQueue(*ctx, device, CL_QUEUE_PROFILING_ENABLE, &err));
-    if (err != CL_SUCCESS) {
-        if (error) *error = "clCreateCommandQueue failed";
+    GPU_STEP("creating command queue");
+    cl_command_queue queue = clCreateCommandQueue(ctx, device, 0, &err);
+    if (err != CL_SUCCESS || queue == nullptr) {
+        if (error) *error = "clCreateCommandQueue failed (cl=" + std::to_string(err) + ")";
         return false;
     }
-    cl_queue_ = queue;
+    cl_queue_ = new cl_command_queue(queue);
 
+    GPU_STEP("compiling OpenCL kernels");
     if (!load_kernels(error)) return false;
 
+    ready_ = true;
+    util::log(util::LogLevel::Info, "GPU initialized: %s", device_name_.c_str());
+    return true;
+}
+
+bool GpuMiner::ensure_buffers(std::string* error) {
+    if (buffers_ready_) return true;
+    if (!ready_) {
+        if (error) *error = "GPU not initialized";
+        return false;
+    }
+
+    GPU_STEP("allocating GPU buffers");
+    cl_context ctx = ctx_handle(cl_context_);
+    cl_int err = 0;
+
     auto create_buf = [&](size_t size, cl_mem_flags flags) -> cl_mem* {
-        auto* buf = new cl_mem(clCreateBuffer(*ctx, flags, size, nullptr, &err));
-        if (err != CL_SUCCESS) throw std::runtime_error("clCreateBuffer failed");
-        return buf;
+        cl_mem buf = clCreateBuffer(ctx, flags, size, nullptr, &err);
+        if (err != CL_SUCCESS || buf == nullptr) {
+            throw std::runtime_error("clCreateBuffer failed (cl=" + std::to_string(err) + ", size=" +
+                                     std::to_string(size) + ")");
+        }
+        return new cl_mem(buf);
     };
 
     try {
@@ -231,8 +257,8 @@ bool GpuMiner::init(std::string* error) {
         return false;
     }
 
-    ready_ = true;
-    util::log(util::LogLevel::Info, "GPU initialized: %s", device_name_.c_str());
+    buffers_ready_ = true;
+    GPU_STEP("GPU buffers ready");
     return true;
 }
 
@@ -247,33 +273,39 @@ bool GpuMiner::load_kernels(std::string* error) {
 
     const char* src = source.c_str();
     size_t len = source.size();
-  cl_int err = 0;
-    auto* ctx = static_cast<cl_context*>(cl_context_);
-    auto* program = new cl_program(clCreateProgramWithSource(*ctx, 1, &src, &len, &err));
-    if (err != CL_SUCCESS) {
-        if (error) *error = "clCreateProgramWithSource failed";
+    cl_int err = 0;
+    cl_context ctx = ctx_handle(cl_context_);
+    cl_device_id device = device_handle(cl_device_);
+
+    GPU_STEP("clCreateProgramWithSource");
+    cl_program program = clCreateProgramWithSource(ctx, 1, &src, &len, &err);
+    if (err != CL_SUCCESS || program == nullptr) {
+        if (error) *error = "clCreateProgramWithSource failed (cl=" + std::to_string(err) + ")";
         return false;
     }
-    cl_program_ = program;
+    cl_program_ = new cl_program(program);
 
-    const char* opts = "-cl-mad-enable -DMATRIX_N=512 -DBLOCK_B=16";
-    err = clBuildProgram(*program, 0, nullptr, opts, nullptr, nullptr);
+    // CL1.2 + target device — avoids AMD driver crashes with nullptr device list
+    const char* opts = "-cl-std=CL1.2 -cl-opt-disable";
+    GPU_STEP("clBuildProgram");
+    err = clBuildProgram(program, 1, &device, opts, nullptr, nullptr);
     if (err != CL_SUCCESS) {
         size_t log_size = 0;
-        clGetProgramBuildInfo(*program, nullptr, CL_PROGRAM_BUILD_LOG, 0, nullptr, &log_size);
-        std::vector<char> log(log_size);
-        clGetProgramBuildInfo(*program, nullptr, CL_PROGRAM_BUILD_LOG, log_size, log.data(), nullptr);
-        if (error) *error = std::string("OpenCL build failed:\n") + log.data();
+        clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 0, nullptr, &log_size);
+        std::vector<char> log(log_size ? log_size : 1);
+        clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, log_size, log.data(), nullptr);
+        if (error) *error = std::string("OpenCL build failed (cl=") + std::to_string(err) + "):\n" + log.data();
         return false;
     }
 
     auto mk = [&](const char* name) -> cl_kernel* {
-        auto* k = new cl_kernel(clCreateKernel(*program, name, &err));
-        if (err != CL_SUCCESS) {
-            if (error) *error = std::string("kernel not found: ") + name;
+        GPU_STEP(name);
+        cl_kernel k = clCreateKernel(program, name, &err);
+        if (err != CL_SUCCESS || k == nullptr) {
+            if (error) *error = std::string("kernel not found: ") + name + " (cl=" + std::to_string(err) + ")";
             return nullptr;
         }
-        return k;
+        return new cl_kernel(k);
     };
 
     k_build_matrix_ = mk("build_matrix_from_seed");
@@ -302,48 +334,52 @@ bool GpuMiner::build_header_template(const matmul::PowState& state) {
 bool GpuMiner::prepare_job(const matmul::PowState& state, const matmul::PowConfig& config, std::string* error) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!ready_ && !init(error)) return false;
+    if (!ensure_buffers(error)) return false;
 
     build_header_template(state);
     const crypto::ArithUint256& tgt = config.target;
     write_target_limbs(tgt, target_limbs_);
 
-    auto* queue = static_cast<cl_command_queue*>(cl_queue_);
-    auto* ctx = static_cast<cl_context*>(cl_context_);
+    cl_command_queue queue = queue_handle(cl_queue_);
+    cl_context ctx = ctx_handle(cl_context_);
     cl_int err = 0;
 
-    clEnqueueWriteBuffer(*queue, *static_cast<cl_mem*>(buf_header_), CL_TRUE, 0, header_template_.size(),
+    clEnqueueWriteBuffer(queue, mem_handle(buf_header_), CL_TRUE, 0, header_template_.size(),
                          header_template_.data(), 0, nullptr, nullptr);
-    clEnqueueWriteBuffer(*queue, *static_cast<cl_mem*>(buf_target_), CL_TRUE, 0, 32, target_limbs_.data(), 0, nullptr,
+    clEnqueueWriteBuffer(queue, mem_handle(buf_target_), CL_TRUE, 0, 32, target_limbs_.data(), 0, nullptr,
                          nullptr);
 
     const uint32_t n = config.n;
     const uint32_t b = config.b;
 
-    // Build matrix A on GPU
-    cl_mem seed_a_buf = clCreateBuffer(*ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, 32,
+    cl_mem buf_a = mem_handle(buf_a_);
+    cl_mem buf_b = mem_handle(buf_b_);
+    cl_mem buf_clean = mem_handle(buf_clean_);
+
+    cl_mem seed_a_buf = clCreateBuffer(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, 32,
                                        const_cast<uint8_t*>(state.seed_a.data()), &err);
-    cl_kernel km = *static_cast<cl_kernel*>(k_build_matrix_);
+    cl_kernel km = kernel_handle(k_build_matrix_);
     clSetKernelArg(km, 0, sizeof(cl_mem), &seed_a_buf);
-    clSetKernelArg(km, 1, sizeof(cl_mem), static_cast<cl_mem*>(buf_a_));
+    clSetKernelArg(km, 1, sizeof(cl_mem), &buf_a);
     clSetKernelArg(km, 2, sizeof(uint32_t), &n);
     size_t g = n * n;
-    clEnqueueNDRangeKernel(*queue, km, 1, nullptr, &g, nullptr, 0, nullptr, nullptr);
+    clEnqueueNDRangeKernel(queue, km, 1, nullptr, &g, nullptr, 0, nullptr, nullptr);
 
-    cl_mem seed_b_buf = clCreateBuffer(*ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, 32,
+    cl_mem seed_b_buf = clCreateBuffer(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, 32,
                                        const_cast<uint8_t*>(state.seed_b.data()), &err);
     clSetKernelArg(km, 0, sizeof(cl_mem), &seed_b_buf);
-    clSetKernelArg(km, 1, sizeof(cl_mem), static_cast<cl_mem*>(buf_b_));
-    clEnqueueNDRangeKernel(*queue, km, 1, nullptr, &g, nullptr, 0, nullptr, nullptr);
+    clSetKernelArg(km, 1, sizeof(cl_mem), &buf_b);
+    clEnqueueNDRangeKernel(queue, km, 1, nullptr, &g, nullptr, 0, nullptr, nullptr);
 
-    cl_kernel kc = *static_cast<cl_kernel*>(k_build_clean_);
-    clSetKernelArg(kc, 0, sizeof(cl_mem), static_cast<cl_mem*>(buf_a_));
-    clSetKernelArg(kc, 1, sizeof(cl_mem), static_cast<cl_mem*>(buf_b_));
-    clSetKernelArg(kc, 2, sizeof(cl_mem), static_cast<cl_mem*>(buf_clean_));
+    cl_kernel kc = kernel_handle(k_build_clean_);
+    clSetKernelArg(kc, 0, sizeof(cl_mem), &buf_a);
+    clSetKernelArg(kc, 1, sizeof(cl_mem), &buf_b);
+    clSetKernelArg(kc, 2, sizeof(cl_mem), &buf_clean);
     clSetKernelArg(kc, 3, sizeof(uint32_t), &n);
     clSetKernelArg(kc, 4, sizeof(uint32_t), &b);
     size_t blocks = 32u * 32u * 32u;
-    clEnqueueNDRangeKernel(*queue, kc, 1, nullptr, &blocks, nullptr, 0, nullptr, nullptr);
-    clFinish(*queue);
+    clEnqueueNDRangeKernel(queue, kc, 1, nullptr, &blocks, nullptr, 0, nullptr, nullptr);
+    clFinish(queue);
 
     clReleaseMemObject(seed_a_buf);
     clReleaseMemObject(seed_b_buf);
@@ -363,30 +399,36 @@ matmul::SolveResult GpuMiner::mine_batch(
 
     std::lock_guard<std::mutex> lock(mutex_);
     if (!ready_) return result;
+    if (!ensure_buffers(nullptr)) return result;
 
     if (share_target) write_target_limbs(*share_target, target_limbs_);
 
-    auto* queue = static_cast<cl_command_queue*>(cl_queue_);
+    cl_command_queue queue = queue_handle(cl_queue_);
     int found_zero = 0;
     uint64_t found_nonce = 0;
     std::array<uint8_t, 32> found_digest{};
 
-    clEnqueueWriteBuffer(*queue, *static_cast<cl_mem*>(buf_target_), CL_TRUE, 0, 32, target_limbs_.data(), 0, nullptr,
+    clEnqueueWriteBuffer(queue, mem_handle(buf_target_), CL_TRUE, 0, 32, target_limbs_.data(), 0, nullptr,
                          nullptr);
-    clEnqueueWriteBuffer(*queue, *static_cast<cl_mem*>(buf_found_), CL_TRUE, 0, sizeof(int), &found_zero, 0, nullptr,
+    clEnqueueWriteBuffer(queue, mem_handle(buf_found_), CL_TRUE, 0, sizeof(int), &found_zero, 0, nullptr,
                          nullptr);
 
-    cl_kernel km = *static_cast<cl_kernel*>(k_mine_);
-    clSetKernelArg(km, 0, sizeof(cl_mem), static_cast<cl_mem*>(buf_a_));
-    clSetKernelArg(km, 1, sizeof(cl_mem), static_cast<cl_mem*>(buf_b_));
-    clSetKernelArg(km, 2, sizeof(cl_mem), static_cast<cl_mem*>(buf_clean_));
-    clSetKernelArg(km, 3, sizeof(cl_mem), static_cast<cl_mem*>(buf_header_));
-    clSetKernelArg(km, 4, sizeof(cl_mem), static_cast<cl_mem*>(buf_target_));
+    cl_kernel km = kernel_handle(k_mine_);
+    cl_mem ma = mem_handle(buf_a_);
+    cl_mem mb = mem_handle(buf_b_);
+    cl_mem mc = mem_handle(buf_clean_);
+    cl_mem mh = mem_handle(buf_header_);
+    cl_mem mt = mem_handle(buf_target_);
+    clSetKernelArg(km, 0, sizeof(cl_mem), &ma);
+    clSetKernelArg(km, 1, sizeof(cl_mem), &mb);
+    clSetKernelArg(km, 2, sizeof(cl_mem), &mc);
+    clSetKernelArg(km, 3, sizeof(cl_mem), &mh);
+    clSetKernelArg(km, 4, sizeof(cl_mem), &mt);
     clSetKernelArg(km, 5, sizeof(uint64_t), &nonce_start);
 
-    cl_mem found_buf = *static_cast<cl_mem*>(buf_found_);
-    cl_mem nonce_buf = *static_cast<cl_mem*>(buf_nonce_);
-    cl_mem digest_buf = *static_cast<cl_mem*>(buf_digest_);
+    cl_mem found_buf = mem_handle(buf_found_);
+    cl_mem nonce_buf = mem_handle(buf_nonce_);
+    cl_mem digest_buf = mem_handle(buf_digest_);
     clSetKernelArg(km, 6, sizeof(cl_mem), &found_buf);
     clSetKernelArg(km, 7, sizeof(cl_mem), &nonce_buf);
     clSetKernelArg(km, 8, sizeof(cl_mem), &digest_buf);
@@ -395,14 +437,14 @@ matmul::SolveResult GpuMiner::mine_batch(
     size_t local = workgroup_size_;
     if (global % local != 0) global = ((global / local) + 1) * local;
 
-    clEnqueueNDRangeKernel(*queue, km, 1, nullptr, &global, &local, 0, nullptr, nullptr);
-    clFinish(*queue);
+    clEnqueueNDRangeKernel(queue, km, 1, nullptr, &global, &local, 0, nullptr, nullptr);
+    clFinish(queue);
 
     int found_flag = 0;
-    clEnqueueReadBuffer(*queue, found_buf, CL_TRUE, 0, sizeof(int), &found_flag, 0, nullptr, nullptr);
+    clEnqueueReadBuffer(queue, found_buf, CL_TRUE, 0, sizeof(int), &found_flag, 0, nullptr, nullptr);
     if (found_flag) {
-        clEnqueueReadBuffer(*queue, nonce_buf, CL_TRUE, 0, sizeof(uint64_t), &found_nonce, 0, nullptr, nullptr);
-        clEnqueueReadBuffer(*queue, digest_buf, CL_TRUE, 0, 32, found_digest.data(), 0, nullptr, nullptr);
+        clEnqueueReadBuffer(queue, nonce_buf, CL_TRUE, 0, sizeof(uint64_t), &found_nonce, 0, nullptr, nullptr);
+        clEnqueueReadBuffer(queue, digest_buf, CL_TRUE, 0, 32, found_digest.data(), 0, nullptr, nullptr);
         result.found = true;
         result.nonce = found_nonce;
         result.digest = crypto::Uint256(found_digest);

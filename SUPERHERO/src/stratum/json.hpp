@@ -27,5 +27,6 @@ const JsonValue* json_get(const JsonValue& value, std::string_view key);
 std::string json_string(const JsonValue& value);
 int64_t json_int(const JsonValue& value);
 bool json_bool(const JsonValue& value);
+std::string json_error_message(const JsonValue& error_value);
 
 }  // namespace superhero::stratum

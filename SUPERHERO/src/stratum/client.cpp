@@ -103,43 +103,80 @@ bool StratumClient::send_rpc(int id, const std::string& method, const std::strin
     return true;
 }
 
-bool StratumClient::handshake() {
-    const std::string params = "[\"SUPERHERO/0.1.0\",{\"protocol_compliant\":[\"matmul-extended-v1\"]}]";
-    if (!send_rpc(msg_id_++, "mining.subscribe", params)) return false;
-
+bool StratumClient::wait_for_rpc(int expected_id, JsonValue* result, std::string* error_msg) {
     std::string line;
     while (read_line(line)) {
         auto parsed = parse_json(line);
-        if (!parsed) continue;
-        if (parsed->type != JsonValue::Type::Object) continue;
+        if (!parsed || parsed->type != JsonValue::Type::Object) continue;
         if (json_get(*parsed, "method")) continue;
-        if (const auto* result = json_get(*parsed, "result")) {
-            if (result->type == JsonValue::Type::Array && result->array_value.size() >= 3) {
-                extranonce1_ = json_string(result->array_value[1]);
-                extranonce2_size_ = static_cast<int>(json_int(result->array_value[2]));
+
+        const auto* id_val = json_get(*parsed, "id");
+        if (!id_val || json_int(*id_val) != expected_id) continue;
+
+        if (const auto* err = json_get(*parsed, "error")) {
+            if (error_msg && err->type != JsonValue::Type::Null) {
+                *error_msg = json_error_message(*err);
             }
-            break;
+            return false;
         }
-    }
 
-    const std::string worker = worker_name(config_);
-    const std::string auth_params = "[\"" + worker + "\",\"" + config_.password + "\"]";
-    if (!send_rpc(msg_id_++, "mining.authorize", auth_params)) return false;
-
-    while (read_line(line)) {
-        auto parsed = parse_json(line);
-        if (!parsed) continue;
-        if (json_get(*parsed, "method")) continue;
-        if (const auto* result = json_get(*parsed, "result")) {
-            if (!json_bool(*result)) {
-                util::log(util::LogLevel::Error, "authorize rejected");
-                return false;
-            }
-            util::log(util::LogLevel::Info, "authorized as %s", worker.c_str());
+        if (const auto* res = json_get(*parsed, "result")) {
+            if (result) *result = *res;
             return true;
         }
     }
+    if (error_msg) *error_msg = "connection closed while waiting for pool response";
     return false;
+}
+
+bool StratumClient::handshake() {
+    const int subscribe_id = msg_id_++;
+    const std::string subscribe_params =
+        "[\"SUPERHERO/0.2.10\",{\"protocol_compliant\":[\"pre_hash_block_tier_v18\",\"matmul-extended-v1\"]}]";
+    if (!send_rpc(subscribe_id, "mining.subscribe", subscribe_params)) return false;
+
+    JsonValue subscribe_result;
+    std::string subscribe_err;
+    if (!wait_for_rpc(subscribe_id, &subscribe_result, &subscribe_err)) {
+        util::log(util::LogLevel::Error, "subscribe failed: %s", subscribe_err.c_str());
+        if (subscribe_err.find("Method not found") != std::string::npos) {
+            util::log(util::LogLevel::Error,
+                      "pool %s:%d does not speak BTX stratum (lproute uses SRBMiner ninja stratum). "
+                      "Use stratum.minebtx.com:3333 instead.",
+                      config_.pool_host.c_str(), config_.pool_port);
+        }
+        return false;
+    }
+    if (subscribe_result.type == JsonValue::Type::Array && subscribe_result.array_value.size() >= 3) {
+        extranonce1_ = json_string(subscribe_result.array_value[1]);
+        extranonce2_size_ = static_cast<int>(json_int(subscribe_result.array_value[2]));
+    } else if (subscribe_result.type == JsonValue::Type::Bool && !subscribe_result.bool_value) {
+        util::log(util::LogLevel::Error, "subscribe rejected by pool");
+        return false;
+    }
+
+    const std::string worker = worker_name(config_);
+    const int authorize_id = msg_id_++;
+    const std::string auth_params = "[\"" + worker + "\",\"" + config_.password + "\"]";
+    if (!send_rpc(authorize_id, "mining.authorize", auth_params)) return false;
+
+    JsonValue authorize_result;
+    std::string authorize_err;
+    if (!wait_for_rpc(authorize_id, &authorize_result, &authorize_err)) {
+        util::log(util::LogLevel::Error, "authorize failed: %s", authorize_err.c_str());
+        if (authorize_err.find("Method not found") != std::string::npos) {
+            util::log(util::LogLevel::Error,
+                      "pool %s:%d does not speak BTX stratum. Use stratum.minebtx.com:3333 instead.",
+                      config_.pool_host.c_str(), config_.pool_port);
+        }
+        return false;
+    }
+    if (!json_bool(authorize_result)) {
+        util::log(util::LogLevel::Error, "authorize rejected for worker %s", worker.c_str());
+        return false;
+    }
+    util::log(util::LogLevel::Info, "authorized as %s", worker.c_str());
+    return true;
 }
 
 void StratumClient::handle_notify(const std::vector<JsonValue>& params) {

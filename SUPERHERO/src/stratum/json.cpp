@@ -226,4 +226,19 @@ bool json_bool(const JsonValue& value) {
     return false;
 }
 
+std::string json_error_message(const JsonValue& error_value) {
+    if (error_value.type == JsonValue::Type::String) return error_value.string_value;
+    if (error_value.type == JsonValue::Type::Object) {
+        const int64_t code = json_get(error_value, "code") ? json_int(*json_get(error_value, "code")) : 0;
+        const std::string msg = json_get(error_value, "message") ? json_string(*json_get(error_value, "message")) : "unknown pool error";
+        if (code != 0) return msg + " (code " + std::to_string(code) + ")";
+        return msg;
+    }
+    if (error_value.type != JsonValue::Type::Array || error_value.array_value.size() < 2) return "unknown pool error";
+    const int64_t code = json_int(error_value.array_value[0]);
+    const std::string msg = json_string(error_value.array_value[1]);
+    if (msg.empty()) return "pool error code " + std::to_string(code);
+    return msg + " (code " + std::to_string(code) + ")";
+}
+
 }  // namespace superhero::stratum

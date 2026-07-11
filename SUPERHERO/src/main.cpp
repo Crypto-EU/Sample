@@ -13,7 +13,7 @@
 
 static void print_usage() {
     std::fprintf(stderr,
-        "SUPERHERO v0.2.9 - BTX (btx-matmul) GPU-only AMD miner for HiveOS\n\n"
+        "SUPERHERO v0.2.10 - BTX (btx-matmul) GPU-only AMD miner for HiveOS\n\n"
         "Usage:\n"
         "  superhero --pool HOST:PORT --wallet WALLET [options]\n"
         "  superhero --benchmark [--batch-size N]\n"
@@ -29,9 +29,9 @@ static void print_usage() {
         "  RX 5700 XT: export HSA_OVERRIDE_GFX_VERSION=10.1.0\n"
         "  RX 6800 XT: export HSA_OVERRIDE_GFX_VERSION=10.3.0\n"
         "  export GPU_MAX_ALLOC_PERCENT=100\n\n"
-        "Pools:\n"
-        "  minebtx: stratum.minebtx.com:3333\n"
-        "  SRBMiner-style: btx-eu.lproute.com:8660\n");
+        "Pools (BTX stratum):\n"
+        "  minebtx: stratum.minebtx.com:3333  (recommended)\n"
+        "  NOT supported: btx-*.lproute.com:8660 (SRBMiner ninja stratum only)\n");
 }
 
 static bool parse_host_port(const std::string& spec, std::string& host, int& port) {
@@ -85,7 +85,7 @@ static int run_benchmark(uint64_t batch_size) {
 
 int main(int argc, char** argv) {
     superhero::stratum::MinerConfig cfg{};
-    cfg.password = "x";
+    cfg.password = "";
     bool benchmark = false;
     bool self_test = false;
     bool list_gpus = false;
@@ -155,7 +155,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::fprintf(stderr, "SUPERHERO v0.2.9 GPU-only | %s | batch=%llu | pool=%s:%d\n",
+    std::fprintf(stderr, "SUPERHERO v0.2.10 GPU-only | %s | batch=%llu | pool=%s:%d\n",
                  superhero::gpu::GpuMiner::instance().device_name().c_str(),
                  static_cast<unsigned long long>(cfg.batch_size), cfg.pool_host.c_str(), cfg.pool_port);
     return superhero::stratum::run_miner(cfg);

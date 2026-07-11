@@ -42,6 +42,7 @@ private:
     bool handshake();
     bool read_line(std::string& line);
     bool send_rpc(int id, const std::string& method, const std::string& params_json);
+    bool wait_for_rpc(int expected_id, JsonValue* result, std::string* error_msg);
     void handle_notify(const std::vector<JsonValue>& params);
     void handle_message(const JsonValue& msg);
     void mine_job();

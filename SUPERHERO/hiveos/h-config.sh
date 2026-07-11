@@ -46,15 +46,18 @@ done
 
 [[ -z "$WORKER" ]] && WORKER="${WORKER_NAME:-$(hostname -s)}"
 
+# Strip accidental wallet/worker text from extra args (Hive flight sheet mistake)
+EXTRA_ARGS="$(echo "$EXTRA_ARGS" | tr '\n' ' ' | sed -E 's/btx1[a-z0-9]{20,}//g' | xargs || true)"
+
 mkdir -p "$(dirname "$config_file")"
 {
-    echo "# SUPERHERO flight sheet config"
-    echo "POOL=${POOL_HOST}:${POOL_PORT}"
-    echo "WALLET=$WALLET"
-    echo "WORKER=$WORKER"
-    echo "PASS=$PASS"
-    [[ -n "$BATCH" ]] && echo "BATCH=$BATCH"
-    [[ -n "$EXTRA_ARGS" ]] && echo "EXTRA_ARGS=$EXTRA_ARGS"
+    echo "# SUPERHERO flight sheet config — do not edit by hand"
+    printf 'POOL=%q\n' "${POOL_HOST}:${POOL_PORT}"
+    printf 'WALLET=%q\n' "$WALLET"
+    printf 'WORKER=%q\n' "$WORKER"
+    printf 'PASS=%q\n' "$PASS"
+    [[ -n "$BATCH" ]] && printf 'BATCH=%q\n' "$BATCH"
+    [[ -n "$EXTRA_ARGS" ]] && printf 'EXTRA_ARGS=%q\n' "$EXTRA_ARGS"
 } > "$config_file"
 
 echo "Generated $config_file (pool=${POOL_HOST}:${POOL_PORT} wallet=$WALLET worker=$WORKER)"

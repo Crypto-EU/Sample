@@ -20,10 +20,23 @@ BATCH="${BATCH:-262144}"
 WORKGROUP="${WORKGROUP:-256}"
 EXTRA_ARGS=""
 
-if [[ -f "$config_file" ]]; then
-    # shellcheck disable=SC1090
-    source "$config_file"
-fi
+load_config() {
+    [[ -f "$config_file" ]] || return 0
+    local line key
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${line//[[:space:]]/}" ]] && continue
+        key="${line%%=*}"
+        case "$key" in
+            POOL|WALLET|WORKER|PASS|BATCH|WORKGROUP|EXTRA_ARGS)
+                # Values written with printf %q — safe to eval
+                eval "$line"
+                ;;
+        esac
+    done < "$config_file"
+}
+
+load_config
 
 IFS=':' read -r POOL_HOST POOL_PORT <<< "$POOL"
 

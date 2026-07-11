@@ -24,7 +24,7 @@ stats=$(cat <<EOF
   "hs_units": "hs",
   "algo": "btx-matmul",
   "ar": [$ACCEPTED, $REJECTED],
-  "ver": "${CUSTOM_VERSION:-0.2.2}"
+  "ver": "${CUSTOM_VERSION:-0.2.3}"
 }
 EOF
 )

@@ -1,4 +1,4 @@
-# Build SUPERHERO binary compatible with HiveOS (glibc 2.31 / Ubuntu 20.04)
+# Build BTXMAT binary compatible with HiveOS (glibc 2.31 / Ubuntu 20.04)
 FROM ubuntu:20.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -18,8 +18,8 @@ WORKDIR /src
 COPY . .
 
 RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-    && cmake --build build -j"$(nproc)" --target superhero
+    && cmake --build build -j"$(nproc)" --target btxmat
 
 # Print linked library requirements for verification
 RUN echo "=== GLIBC requirements ===" \
-    && objdump -T build/superhero | grep GLIBC | sed 's/.*GLIBC_/GLIBC_/' | sort -u
+    && objdump -T build/btxmat | grep GLIBC | sed 's/.*GLIBC_/GLIBC_/' | sort -u

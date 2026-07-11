@@ -8,10 +8,13 @@
 
 #include <arpa/inet.h>
 #include <chrono>
+#include <cerrno>
 #include <cstring>
+#include <fcntl.h>
 #include <mutex>
 #include <netdb.h>
 #include <optional>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -21,6 +24,14 @@ namespace {
 std::string worker_name(const MinerConfig& cfg) {
     if (cfg.worker_name.empty()) return cfg.wallet;
     return cfg.wallet + "." + cfg.worker_name;
+}
+
+bool extract_line(std::string& buffer, std::string& line) {
+    const auto pos = buffer.find('\n');
+    if (pos == std::string::npos) return false;
+    line = buffer.substr(0, pos);
+    buffer.erase(0, pos + 1);
+    return true;
 }
 
 }  // namespace
@@ -74,20 +85,44 @@ bool StratumClient::connect() {
         util::log(util::LogLevel::Error, "connect failed to %s:%d", config_.pool_host.c_str(), config_.pool_port);
         return false;
     }
+
+    const int flags = fcntl(sock_, F_GETFL, 0);
+    if (flags >= 0) fcntl(sock_, F_SETFL, flags | O_NONBLOCK);
+    recv_buffer_.clear();
+
     util::log(util::LogLevel::Info, "connected to %s:%d", config_.pool_host.c_str(), config_.pool_port);
     return true;
 }
 
 bool StratumClient::read_line(std::string& line) {
-    line.clear();
-    char ch;
+    if (extract_line(recv_buffer_, line)) return true;
+
+    char buf[4096];
     while (running_) {
-        const ssize_t n = ::recv(sock_, &ch, 1, 0);
-        if (n <= 0) return false;
-        if (ch == '\n') return true;
-        line.push_back(ch);
+        const ssize_t n = ::recv(sock_, buf, sizeof(buf), 0);
+        if (n > 0) {
+            recv_buffer_.append(buf, static_cast<size_t>(n));
+            if (extract_line(recv_buffer_, line)) return true;
+            continue;
+        }
+        if (n == 0) return false;
+        if (errno == EWOULDBLOCK || errno == EAGAIN) return false;
+        if (errno == EINTR) continue;
+        return false;
     }
     return false;
+}
+
+bool StratumClient::poll_messages() {
+    std::string line;
+    while (read_line(line)) {
+        auto parsed = parse_json(line);
+        if (!parsed || parsed->type != JsonValue::Type::Object) continue;
+        if (json_get(*parsed, "method")) {
+            handle_message(*parsed);
+        }
+    }
+    return running_;
 }
 
 bool StratumClient::send_rpc(int id, const std::string& method, const std::string& params_json) {
@@ -104,25 +139,40 @@ bool StratumClient::send_rpc(int id, const std::string& method, const std::strin
 }
 
 bool StratumClient::wait_for_rpc(int expected_id, JsonValue* result, std::string* error_msg) {
-    std::string line;
-    while (read_line(line)) {
-        auto parsed = parse_json(line);
-        if (!parsed || parsed->type != JsonValue::Type::Object) continue;
-        if (json_get(*parsed, "method")) continue;
-
-        const auto* id_val = json_get(*parsed, "id");
-        if (!id_val || json_int(*id_val) != expected_id) continue;
-
-        if (const auto* err = json_get(*parsed, "error")) {
-            if (err->type != JsonValue::Type::Null) {
-                if (error_msg) *error_msg = json_error_message(*err);
-                return false;
-            }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (running_ && std::chrono::steady_clock::now() < deadline) {
+        pollfd pfd{};
+        pfd.fd = sock_;
+        pfd.events = POLLIN;
+        const int pr = ::poll(&pfd, 1, 200);
+        if (pr < 0) {
+            if (errno == EINTR) continue;
+            break;
         }
+        if (pr > 0 && (pfd.revents & (POLLIN | POLLHUP | POLLERR))) {
+            std::string line;
+            if (!read_line(line)) {
+                if (pfd.revents & (POLLHUP | POLLERR)) break;
+                continue;
+            }
+            auto parsed = parse_json(line);
+            if (!parsed || parsed->type != JsonValue::Type::Object) continue;
+            if (json_get(*parsed, "method")) continue;
 
-        if (const auto* res = json_get(*parsed, "result")) {
-            if (result) *result = *res;
-            return true;
+            const auto* id_val = json_get(*parsed, "id");
+            if (!id_val || json_int(*id_val) != expected_id) continue;
+
+            if (const auto* err = json_get(*parsed, "error")) {
+                if (err->type != JsonValue::Type::Null) {
+                    if (error_msg) *error_msg = json_error_message(*err);
+                    return false;
+                }
+            }
+
+            if (const auto* res = json_get(*parsed, "result")) {
+                if (result) *result = *res;
+                return true;
+            }
         }
     }
     if (error_msg) *error_msg = "connection closed while waiting for pool response";
@@ -132,7 +182,7 @@ bool StratumClient::wait_for_rpc(int expected_id, JsonValue* result, std::string
 bool StratumClient::handshake() {
     const int subscribe_id = msg_id_++;
     const std::string subscribe_params =
-        "[\"SUPERHERO/0.2.11\",{\"protocol_compliant\":[\"pre_hash_block_tier_v18\"]}]";
+        "[\"BTXMAT/1.0.0\",{\"protocol_compliant\":[\"pre_hash_block_tier_v18\"]}]";
     if (!send_rpc(subscribe_id, "mining.subscribe", subscribe_params)) return false;
 
     JsonValue subscribe_result;
@@ -141,7 +191,7 @@ bool StratumClient::handshake() {
         util::log(util::LogLevel::Error, "subscribe failed: %s", subscribe_err.c_str());
         if (subscribe_err.find("Method not found") != std::string::npos) {
             util::log(util::LogLevel::Error,
-                      "pool %s:%d does not speak BTX stratum (lproute uses SRBMiner ninja stratum). "
+                      "pool %s:%d does not speak BTX stratum (ninja/lproute pools need SRBMiner). "
                       "Use stratum.minebtx.com:3333 instead.",
                       config_.pool_host.c_str(), config_.pool_port);
         }
@@ -291,27 +341,33 @@ void StratumClient::run() {
             continue;
         }
 
-        std::string line;
-        auto last_mine = std::chrono::steady_clock::now();
-        while (running_ && read_line(line)) {
-            auto parsed = parse_json(line);
-            if (!parsed) continue;
-            if (parsed->type != JsonValue::Type::Object) continue;
-            if (json_get(*parsed, "method")) {
-                handle_message(*parsed);
+        while (running_) {
+            pollfd pfd{};
+            pfd.fd = sock_;
+            pfd.events = POLLIN;
+            const int pr = ::poll(&pfd, 1, 50);
+
+            if (pr < 0) {
+                if (errno == EINTR) continue;
+                break;
             }
 
-            const auto now = std::chrono::steady_clock::now();
-            if (has_job_ && std::chrono::duration<double>(now - last_mine).count() >= 0.1) {
-                mine_job();
-                last_mine = now;
+            if (pr > 0) {
+                if (pfd.revents & (POLLHUP | POLLERR)) break;
+                if (pfd.revents & POLLIN) {
+                    if (!poll_messages()) break;
+                }
             }
+
+            if (has_job_) mine_job();
         }
 
         if (sock_ >= 0) {
             ::close(sock_);
             sock_ = -1;
         }
+        has_job_ = false;
+        gpu_job_ready_ = false;
         util::log(util::LogLevel::Warn, "disconnected; reconnecting...");
         std::this_thread::sleep_for(std::chrono::seconds(3));
     }
@@ -320,7 +376,20 @@ void StratumClient::run() {
 int run_miner(const MinerConfig& config) {
     StratumClient client(config);
     client.start();
-    while (true) std::this_thread::sleep_for(std::chrono::seconds(60));
+
+    auto last_log = std::chrono::steady_clock::now();
+    while (true) {
+        std::this_thread::sleep_for(std::chrono::seconds(10));
+        const auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration<double>(now - last_log).count() >= 30) {
+            const double hr = client.stats().hashrate.load();
+            if (hr > 0) {
+                util::log(util::LogLevel::Info, "hashrate: %.2f H/s | accepted: %llu",
+                          hr, static_cast<unsigned long long>(client.stats().accepted.load()));
+            }
+            last_log = now;
+        }
+    }
     return 0;
 }
 

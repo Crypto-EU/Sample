@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SUPERHERO HiveOS stats (sets $khs and $stats for agent)
+# BTXMAT HiveOS stats (sets $khs and $stats for agent)
 
 MINER_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -13,7 +13,7 @@ REJECTED=0
 if [[ -f "$LOG" ]]; then
     HASHRATE=$(grep -oP 'Benchmark:.*=>\s*\K[0-9.]+' "$LOG" 2>/dev/null | tail -1)
     [[ -z "$HASHRATE" ]] && HASHRATE=$(grep -oP 'hashrate[=: ]\K[0-9.]+' "$LOG" 2>/dev/null | tail -1)
-    ACCEPTED=$(grep -c 'share OK' "$LOG" 2>/dev/null || echo 0)
+    ACCEPTED=$(grep -c 'share found' "$LOG" 2>/dev/null || echo 0)
     REJECTED=$(grep -c 'share REJECTED' "$LOG" 2>/dev/null || echo 0)
 fi
 
@@ -24,7 +24,7 @@ stats=$(cat <<EOF
   "hs_units": "hs",
   "algo": "btx-matmul",
   "ar": [$ACCEPTED, $REJECTED],
-  "ver": "${CUSTOM_VERSION:-0.2.4}"
+  "ver": "${CUSTOM_VERSION:-1.0.0}"
 }
 EOF
 )

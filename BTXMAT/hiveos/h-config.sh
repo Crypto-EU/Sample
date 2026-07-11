@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SUPERHERO HiveOS config generator (sourced by /hive/bin/custom)
+# BTXMAT HiveOS config generator (sourced by /hive/bin/custom)
 
 set -euo pipefail
 
@@ -14,7 +14,7 @@ POOL_HOST=""
 POOL_PORT=""
 WALLET=""
 WORKER=""
-PASS="${CUSTOM_PASS:-}"
+PASS="${CUSTOM_PASS:-x}"
 BATCH=""
 EXTRA_ARGS="${CUSTOM_USER_CONFIG:-}"
 
@@ -46,12 +46,11 @@ done
 
 [[ -z "$WORKER" ]] && WORKER="${WORKER_NAME:-$(hostname -s)}"
 
-# Strip accidental wallet/worker text from extra args (Hive flight sheet mistake)
 EXTRA_ARGS="$(echo "$EXTRA_ARGS" | tr '\n' ' ' | sed -E 's/btx1[a-z0-9]{20,}//g' | xargs || true)"
 
 mkdir -p "$(dirname "$config_file")"
 {
-    echo "# SUPERHERO flight sheet config — do not edit by hand"
+    echo "# BTXMAT flight sheet config — do not edit by hand"
     printf 'POOL=%q\n' "${POOL_HOST}:${POOL_PORT}"
     printf 'WALLET=%q\n' "$WALLET"
     printf 'WORKER=%q\n' "$WORKER"

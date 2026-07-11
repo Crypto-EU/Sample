@@ -16,7 +16,7 @@ struct MinerConfig {
     int pool_port{3333};
     std::string wallet;
     std::string worker_name{"rig"};
-    std::string password;
+    std::string password{"x"};
     uint64_t batch_size{262144};
     uint32_t workgroup_size{256};
 };
@@ -41,6 +41,7 @@ private:
     bool connect();
     bool handshake();
     bool read_line(std::string& line);
+    bool poll_messages();
     bool send_rpc(int id, const std::string& method, const std::string& params_json);
     bool wait_for_rpc(int expected_id, JsonValue* result, std::string* error_msg);
     void handle_notify(const std::vector<JsonValue>& params);
@@ -56,6 +57,7 @@ private:
     std::string extranonce1_;
     int extranonce2_size_{4};
     double difficulty_{1.0};
+    std::string recv_buffer_;
 
     matmul::PowState current_state_{};
     matmul::PowConfig pow_config_{};

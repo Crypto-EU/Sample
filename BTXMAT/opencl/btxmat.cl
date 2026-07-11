@@ -1,4 +1,4 @@
-// SUPERHERO GPU kernels - BTX btx-matmul for AMD OpenCL (GPU-only mining)
+// BTXMAT GPU kernels - BTX btx-matmul for AMD OpenCL (HiveOS)
 
 #define MOD 0x7FFFFFFFu
 #define REDUCE_INTERVAL 4u
@@ -8,6 +8,9 @@
 #define BLOCKS_PER_AXIS 32u
 #define CLEAN_BLOCK_ELEMS 256u
 #define HEADER_BYTES 150u
+#define MINE_CV_WORDS 256u
+#define MINE_TMP_WORDS 128u
+#define MINE_SCRATCH_WORDS (MINE_CV_WORDS + MINE_TMP_WORDS)
 
 constant uint K256[64] = {
     0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
@@ -39,13 +42,18 @@ static inline uint m31_add(uint a, uint b) { uint s=a+b; return (s>=MOD)?(s-MOD)
 static inline uint m31_mul(uint a, uint b) { return m31_reduce64((ulong)a*(ulong)b); }
 
 static inline void sha256_compress(uint st[8], uint w[16]) {
-    uint wex[64];
+    uint wex[16];
     for (int i = 0; i < 16; ++i) wex[i] = w[i];
-    for (int t = 16; t < 64; ++t)
-        wex[t] = g1(wex[t-2]) + wex[t-7] + g0(wex[t-15]) + wex[t-16];
     uint a=st[0],b=st[1],c=st[2],d=st[3],e=st[4],f=st[5],g=st[6],h=st[7];
-    for (int t = 0; t < 64; ++t) {
-        uint t1 = h + s1(e) + ch(e,f,g) + K256[t] + wex[t];
+    for (int round = 0; round < 64; ++round) {
+        uint wi;
+        if (round < 16) {
+            wi = wex[round];
+        } else {
+            wi = g1(wex[(round-2)&15]) + wex[(round-7)&15] + g0(wex[(round-15)&15]) + wex[(round-16)&15];
+            wex[round & 15] = wi;
+        }
+        uint t1 = h + s1(e) + ch(e,f,g) + K256[round] + wi;
         uint t2 = s0(a) + maj(a,b,c);
         h=g; g=f; f=e; e=d+t1; d=c; c=b; b=a; a=t1+t2;
     }
@@ -101,9 +109,6 @@ static inline void derive_noise_seed(uchar tag0, uchar tag1, uchar tag2, uchar t
 static inline uint mat_at_g(__global const uint* m, uint stride, uint row, uint col) {
     return m[(ulong)row * stride + col];
 }
-static inline uint mat_at_p(const uint* m, uint stride, uint row, uint col) {
-    return m[(ulong)row * stride + col];
-}
 
 static inline uint oracle_el(const uchar seed[32], uint row, uint col) {
     return from_oracle(seed, row * NOISE_R + col);
@@ -118,9 +123,10 @@ static inline uint oracle_fr(const uchar seed[32], uint row, uint col) {
     return from_oracle(seed, row * MATRIX_N + col);
 }
 
-static inline uint compress_af_priv(__global const uint* A, const uchar seed_fl[32], const uchar seed_fr[32],
-                             uint bi, uint ell, uint bj, const uint* cv, uint n, uint b, uint r) {
-    uint weighted_v[128];
+static inline uint compress_af_scratch(__global const uint* A, const uchar seed_fl[32], const uchar seed_fr[32],
+                             uint bi, uint ell, uint bj, __global const uint* cv, __global uint* tmp,
+                             uint n, uint b, uint r) {
+    __global uint* weighted_v = tmp;
     for (uint x = 0; x < b; ++x) {
         for (uint u = 0; u < r; ++u) {
             uint acc = 0;
@@ -141,9 +147,10 @@ static inline uint compress_af_priv(__global const uint* A, const uchar seed_fl[
     return scalar;
 }
 
-static inline uint compress_eb_priv(const uchar seed_el[32], const uchar seed_er[32], __global const uint* B,
-                             uint bi, uint ell, uint bj, const uint* cv, uint n, uint b, uint r) {
-    uint weighted_v[64];
+static inline uint compress_eb_scratch(const uchar seed_el[32], const uchar seed_er[32], __global const uint* B,
+                             uint bi, uint ell, uint bj, __global const uint* cv, __global uint* tmp,
+                             uint n, uint b, uint r) {
+    __global uint* weighted_v = tmp;
     for (uint u = 0; u < r; ++u) {
         for (uint y = 0; y < b; ++y) {
             uint acc = 0;
@@ -164,9 +171,11 @@ static inline uint compress_eb_priv(const uchar seed_el[32], const uchar seed_er
     return scalar;
 }
 
-static inline uint compress_ef_priv(const uchar seed_el[32], const uchar seed_er[32], const uchar seed_fl[32],
-                             const uchar seed_fr[32], uint bi, uint ell, uint bj, const uint* cv, uint n, uint b, uint r) {
-    uint weighted_v[64];
+static inline uint compress_ef_scratch(const uchar seed_el[32], const uchar seed_er[32], const uchar seed_fl[32],
+                             const uchar seed_fr[32], uint bi, uint ell, uint bj, __global const uint* cv,
+                             __global uint* tmp, uint n, uint b, uint r) {
+    __global uint* weighted_v = tmp;
+    __global uint* weighted_fr = tmp + 64;
     for (uint u = 0; u < r; ++u) {
         for (uint y = 0; y < b; ++y) {
             uint acc = 0;
@@ -175,7 +184,6 @@ static inline uint compress_ef_priv(const uchar seed_el[32], const uchar seed_er
             weighted_v[u*b+y] = acc;
         }
     }
-    uint weighted_fr[64];
     for (uint u = 0; u < r; ++u) {
         for (uint v = 0; v < r; ++v) {
             uint acc = 0;
@@ -223,32 +231,19 @@ static inline void sha256_ctx_final(uint st[8], uint w[16], int wpos, ulong bitl
     }
 }
 
-static inline int digest_leq_target(const uchar dig_le[32], const uint target[8]) {
-    for (int i = 7; i >= 0; --i) {
-        uint d = ((uint)dig_le[i*4]) | ((uint)dig_le[i*4+1]<<8) | ((uint)dig_le[i*4+2]<<16) | ((uint)dig_le[i*4+3]<<24);
-        if (d < target[i]) return 1;
-        if (d > target[i]) return 0;
-    }
-    return 1;
-}
-
-// Build matrix[n][n] from seed - one thread per element
 __kernel void build_matrix_from_seed(__global const uchar* seed_le, __global uint* matrix, uint n) {
     uint idx = get_global_id(0);
-    uint total = n * n;
-    if (idx >= total) return;
+    if (idx >= n * n) return;
     uchar seed[32];
     for (int i = 0; i < 32; ++i) seed[i] = seed_le[i];
     matrix[idx] = from_oracle(seed, idx);
 }
 
-// Build one clean block product - one thread per block (i,j,ell)
 __kernel void build_clean_block(__global const uint* A, __global const uint* B,
                                 __global uint* clean_out, uint n, uint b) {
     uint block_idx = get_global_id(0);
     uint bpa = n / b;
-    uint total = bpa * bpa * bpa;
-    if (block_idx >= total) return;
+    if (block_idx >= bpa * bpa * bpa) return;
     uint ell = block_idx % bpa;
     uint j = (block_idx / bpa) % bpa;
     uint i = block_idx / (bpa * bpa);
@@ -266,7 +261,7 @@ __kernel void build_clean_block(__global const uint* A, __global const uint* B,
     }
 }
 
-__kernel void superhero_mine(
+__kernel void btxmat_mine(
     __global const uint* matrix_a,
     __global const uint* matrix_b,
     __global const uint* clean_blocks,
@@ -275,10 +270,13 @@ __kernel void superhero_mine(
     ulong nonce_start,
     __global int* found_flag,
     __global ulong* found_nonce,
-    __global uchar* found_digest)
+    __global uchar* found_digest,
+    __global uint* mine_scratch)
 {
     const ulong gid = get_global_id(0);
     const ulong nonce = nonce_start + gid;
+    __global uint* cv = mine_scratch + gid * MINE_SCRATCH_WORDS;
+    __global uint* tmp = cv + MINE_CV_WORDS;
 
     uchar hdr[HEADER_BYTES];
     for (int i = 0; i < HEADER_BYTES; ++i) hdr[i] = header_template[i];
@@ -287,7 +285,6 @@ __kernel void superhero_mine(
 
     uchar header_hash_internal[32];
     sha256_oneshot(hdr, HEADER_BYTES, header_hash_internal);
-
     uchar sigma_internal[32];
     sha256_oneshot(header_hash_internal, 32, sigma_internal);
 
@@ -299,8 +296,7 @@ __kernel void superhero_mine(
 
     uchar compress_seed[32];
     derive_noise_seed('m','a','t','m','u','l','-','c','o','m','p','r','e','s','s','-','v','1', sigma_internal, compress_seed);
-    uint cv[256];
-    for (uint k = 0; k < 256; ++k) cv[k] = from_oracle(compress_seed, k);
+    for (uint k = 0; k < MINE_CV_WORDS; ++k) cv[k] = from_oracle(compress_seed, k);
 
     uint st[8]; uint w[16]; int wpos = 0; ulong bitlen = 0;
     sha256_ctx_init(st);
@@ -315,8 +311,7 @@ __kernel void superhero_mine(
                 __global const uint* block = clean_blocks + bidx * CLEAN_BLOCK_ELEMS;
                 ulong dot_acc = 0;
                 uint dot_pending = 0;
-                const uint dot_len = b * b;
-                for (uint di = 0; di < dot_len; ++di) {
+                for (uint di = 0; di < b * b; ++di) {
                     dot_acc += (ulong)block[di] * (ulong)cv[di];
                     if (++dot_pending == REDUCE_INTERVAL) {
                         dot_acc = m31_reduce64(dot_acc);
@@ -324,9 +319,9 @@ __kernel void superhero_mine(
                     }
                 }
                 uint clean_c = m31_reduce64(dot_acc);
-                uint af = compress_af_priv(matrix_a, seed_fl, seed_fr, i, ell, j, cv, n, b, r);
-                uint eb = compress_eb_priv(seed_el, seed_er, matrix_b, i, ell, j, cv, n, b, r);
-                uint ef = compress_ef_priv(seed_el, seed_er, seed_fl, seed_fr, i, ell, j, cv, n, b, r);
+                uint af = compress_af_scratch(matrix_a, seed_fl, seed_fr, i, ell, j, cv, tmp, n, b, r);
+                uint eb = compress_eb_scratch(seed_el, seed_er, matrix_b, i, ell, j, cv, tmp, n, b, r);
+                uint ef = compress_ef_scratch(seed_el, seed_er, seed_fl, seed_fr, i, ell, j, cv, tmp, n, b, r);
                 compressed_prefix = m31_add(compressed_prefix, m31_add(clean_c, m31_add(af, m31_add(eb, ef))));
                 uchar pb[4] = {(uchar)compressed_prefix, (uchar)(compressed_prefix>>8),
                                (uchar)(compressed_prefix>>16), (uchar)(compressed_prefix>>24)};
@@ -346,10 +341,8 @@ __kernel void superhero_mine(
         if (d < target_limbs[ti]) break;
         if (d > target_limbs[ti]) { meets_target = 0; break; }
     }
-    if (meets_target) {
-        if (atomic_cmpxchg(found_flag, 0, 1) == 0) {
-            *found_nonce = nonce;
-            for (int i = 0; i < 32; ++i) found_digest[i] = dig[i];
-        }
+    if (meets_target && atomic_cmpxchg(found_flag, 0, 1) == 0) {
+        *found_nonce = nonce;
+        for (int i = 0; i < 32; ++i) found_digest[i] = dig[i];
     }
 }

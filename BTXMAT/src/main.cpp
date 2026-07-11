@@ -13,12 +13,12 @@
 
 static void print_usage() {
     std::fprintf(stderr,
-        "SUPERHERO v0.2.11 - BTX (btx-matmul) GPU-only AMD miner for HiveOS\n\n"
+        "BTXMAT v1.0.0 - BTX (btx-matmul) GPU miner for AMD / HiveOS\n\n"
         "Usage:\n"
-        "  superhero --pool HOST:PORT --wallet WALLET [options]\n"
-        "  superhero --benchmark [--batch-size N]\n"
-        "  superhero --list-gpus\n"
-        "  superhero --self-test\n\n"
+        "  btxmat --pool HOST:PORT --wallet WALLET [options]\n"
+        "  btxmat --benchmark [--batch-size N]\n"
+        "  btxmat --list-gpus\n"
+        "  btxmat --self-test\n\n"
         "Options:\n"
         "  --worker NAME        Worker suffix (default: rig)\n"
         "  --batch-size N       GPU nonces per kernel launch (default: 262144)\n"
@@ -29,9 +29,9 @@ static void print_usage() {
         "  RX 5700 XT: export HSA_OVERRIDE_GFX_VERSION=10.1.0\n"
         "  RX 6800 XT: export HSA_OVERRIDE_GFX_VERSION=10.3.0\n"
         "  export GPU_MAX_ALLOC_PERCENT=100\n\n"
-        "Pools (BTX stratum):\n"
-        "  minebtx: stratum.minebtx.com:3333  (recommended)\n"
-        "  NOT supported: btx-*.lproute.com:8660 (SRBMiner ninja stratum only)\n");
+        "Recommended pool:\n"
+        "  stratum.minebtx.com:3333\n"
+        "  Ninja/lproute pools require SRBMiner (different stratum protocol).\n");
 }
 
 static bool parse_host_port(const std::string& spec, std::string& host, int& port) {
@@ -85,7 +85,6 @@ static int run_benchmark(uint64_t batch_size) {
 
 int main(int argc, char** argv) {
     superhero::stratum::MinerConfig cfg{};
-    cfg.password = "";
     bool benchmark = false;
     bool self_test = false;
     bool list_gpus = false;
@@ -127,7 +126,7 @@ int main(int argc, char** argv) {
     }
 
     if (self_test) {
-        std::printf("Run build target superhero-test for CPU vector validation.\n");
+        std::printf("Run build target btxmat-test for CPU vector validation.\n");
         return 0;
     }
 
@@ -155,7 +154,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::fprintf(stderr, "SUPERHERO v0.2.11 GPU-only | %s | batch=%llu | pool=%s:%d\n",
+    std::fprintf(stderr, "BTXMAT v1.0.0 | %s | batch=%llu | pool=%s:%d\n",
                  superhero::gpu::GpuMiner::instance().device_name().c_str(),
                  static_cast<unsigned long long>(cfg.batch_size), cfg.pool_host.c_str(), cfg.pool_port);
     return superhero::stratum::run_miner(cfg);

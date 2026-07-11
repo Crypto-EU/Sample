@@ -33,15 +33,19 @@ public:
 private:
     GpuMiner() = default;
     bool load_kernels(std::string* error);
-    bool ensure_buffers(std::string* error);
+    bool ensure_buffers(size_t scratch_threads, std::string* error);
+    bool ensure_scratch(size_t scratch_threads, std::string* error);
     bool build_header_template(const matmul::PowState& state);
     static std::string read_kernel_source();
+
+    static constexpr uint32_t kScratchWordsPerThread = 384;
 
     bool ready_{false};
     bool buffers_ready_{false};
     std::string device_name_;
     uint64_t default_batch_{262144};
     uint32_t workgroup_size_{256};
+    size_t scratch_threads_{0};
 
     void* cl_context_{nullptr};
     void* cl_queue_{nullptr};
@@ -59,6 +63,7 @@ private:
     void* buf_found_{nullptr};
     void* buf_nonce_{nullptr};
     void* buf_digest_{nullptr};
+    void* buf_scratch_{nullptr};
 
     std::array<uint8_t, 150> header_template_{};
     std::array<uint32_t, 8> target_limbs_{};

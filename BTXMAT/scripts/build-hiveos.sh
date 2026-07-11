@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Build SUPERHERO with old glibc (2.17) for HiveOS compatibility.
+# Build BTXMAT with old glibc (2.17) for HiveOS compatibility.
 set -euo pipefail
 
-VERSION="${1:-0.2.4}"
+VERSION="${1:-1.0.0}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$ROOT/build-hiveos"
 PKG="$ROOT/dist"
@@ -29,7 +29,7 @@ if ! "$MAMBA" env list | grep -q '^hiveos '; then
         gxx_linux-64=12 sysroot_linux-64=2.17 cmake make opencl-headers ocl-icd
 fi
 
-echo "=== SUPERHERO HiveOS-compatible build (glibc <= 2.17) ==="
+echo "=== BTXMAT HiveOS-compatible build (glibc <= 2.17) ==="
 
 "$MAMBA" run -n hiveos bash -c "
 set -euo pipefail
@@ -41,18 +41,17 @@ rm -rf \"\$BUILD\"
 cmake -S \"\$ROOT\" -B \"\$BUILD\" -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CXX_COMPILER=\"\${CONDA_PREFIX}/bin/x86_64-conda-linux-gnu-g++\" \
     -DCMAKE_SYSROOT=\"\$CONDA_BUILD_SYSROOT\"
-cmake --build \"\$BUILD\" -j\$(nproc) --target superhero
-strip \"\$BUILD/superhero\"
+cmake --build \"\$BUILD\" -j\$(nproc) --target btxmat
+strip \"\$BUILD/btxmat\"
 echo '=== Library requirements ==='
-objdump -T \"\$BUILD/superhero\" | grep -oE 'GLIBC_[0-9.]+|GLIBCXX_[0-9.]+' | sort -Vu || true
-mkdir -p \"\$PKG/superhero/opencl\"
-rm -rf \"\$PKG/superhero\"
-mkdir -p \"\$PKG/superhero/opencl\"
-cp \"\$BUILD/superhero\" \"\$PKG/superhero/\"
-cp \"\$ROOT/opencl/superhero.cl\" \"\$PKG/superhero/opencl/\"
-cp \"\$ROOT/hiveos/\"* \"\$PKG/superhero/\"
-chmod +x \"\$PKG/superhero/\"*.sh \"\$PKG/superhero/superhero\"
-tar -C \"\$PKG\" -czf \"\$PKG/superhero-\${VERSION}.tar.gz\" superhero
-sha256sum \"\$PKG/superhero-\${VERSION}.tar.gz\"
-echo \"Built \$PKG/superhero-\${VERSION}.tar.gz (HiveOS compatible)\"
+objdump -T \"\$BUILD/btxmat\" | grep -oE 'GLIBC_[0-9.]+|GLIBCXX_[0-9.]+' | sort -Vu || true
+rm -rf \"\$PKG/btxmat\"
+mkdir -p \"\$PKG/btxmat/opencl\"
+cp \"\$BUILD/btxmat\" \"\$PKG/btxmat/\"
+cp \"\$ROOT/opencl/btxmat.cl\" \"\$PKG/btxmat/opencl/\"
+cp \"\$ROOT/hiveos/\"* \"\$PKG/btxmat/\"
+chmod +x \"\$PKG/btxmat/\"*.sh \"\$PKG/btxmat/btxmat\"
+tar -C \"\$PKG\" -czf \"\$PKG/btxmat-\${VERSION}.tar.gz\" btxmat
+sha256sum \"\$PKG/btxmat-\${VERSION}.tar.gz\"
+echo \"Built \$PKG/btxmat-\${VERSION}.tar.gz (HiveOS compatible)\"
 "

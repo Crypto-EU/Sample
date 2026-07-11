@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(SUPERHERO VERSION 0.2.0 LANGUAGES CXX)
+project(BTXMAT VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -8,7 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(Threads REQUIRED)
 find_package(OpenCL REQUIRED)
 
-set(SUPERHERO_SOURCES
+set(BTXMAT_SOURCES
     src/crypto/sha256.cpp
     src/crypto/uint256.cpp
     src/crypto/arith_uint256.cpp
@@ -25,14 +25,14 @@ set(SUPERHERO_SOURCES
     src/main.cpp
 )
 
-add_executable(superhero ${SUPERHERO_SOURCES})
-target_include_directories(superhero PRIVATE src)
-target_link_libraries(superhero PRIVATE Threads::Threads OpenCL::OpenCL)
-target_link_options(superhero PRIVATE -static-libstdc++ -static-libgcc)
-target_compile_definitions(superhero PRIVATE SUPERHERO_GPU_ONLY=1)
-target_compile_options(superhero PRIVATE -O3 -Wall -Wextra)
+add_executable(btxmat ${BTXMAT_SOURCES})
+target_include_directories(btxmat PRIVATE src)
+target_link_libraries(btxmat PRIVATE Threads::Threads OpenCL::OpenCL)
+target_link_options(btxmat PRIVATE -static-libstdc++ -static-libgcc)
+target_compile_definitions(btxmat PRIVATE BTXMAT_GPU_ONLY=1)
+target_compile_options(btxmat PRIVATE -O3 -Wall -Wextra)
 
-add_executable(superhero-test tests/test_vectors.cpp
+add_executable(btxmat-test tests/test_vectors.cpp
     src/crypto/sha256.cpp
     src/crypto/uint256.cpp
     src/crypto/arith_uint256.cpp
@@ -43,9 +43,9 @@ add_executable(superhero-test tests/test_vectors.cpp
     src/matmul/transcript.cpp
     src/matmul/solver.cpp
 )
-target_include_directories(superhero-test PRIVATE src)
-target_compile_options(superhero-test PRIVATE -O2 -Wall -Wextra)
+target_include_directories(btxmat-test PRIVATE src)
+target_compile_options(btxmat-test PRIVATE -O2 -Wall -Wextra)
 
-install(TARGETS superhero RUNTIME DESTINATION bin)
-install(DIRECTORY hiveos/ DESTINATION share/superhero/hiveos)
-install(DIRECTORY opencl/ DESTINATION share/superhero/opencl)
+install(TARGETS btxmat RUNTIME DESTINATION bin)
+install(DIRECTORY hiveos/ DESTINATION share/btxmat/hiveos)
+install(DIRECTORY opencl/ DESTINATION share/btxmat/opencl)

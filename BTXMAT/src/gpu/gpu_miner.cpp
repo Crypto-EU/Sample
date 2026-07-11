@@ -23,7 +23,7 @@ namespace {
 
 #define GPU_STEP(msg)                                                                                          \
     do {                                                                                                       \
-        std::fprintf(stderr, "[SUPERHERO GPU] %s\n", msg);                                                     \
+        std::fprintf(stderr, "[BTXMAT GPU] %s\n", msg);                                                        \
         std::fflush(stderr);                                                                                   \
     } while (0)
 
@@ -149,6 +149,12 @@ std::string exe_directory() {
     return path.substr(0, pos);
 }
 
+size_t round_up_work(size_t global, size_t local) {
+    if (local == 0) return global;
+    if (global % local == 0) return global;
+    return ((global / local) + 1) * local;
+}
+
 }  // namespace
 
 GpuMiner& GpuMiner::instance() {
@@ -160,13 +166,13 @@ std::string GpuMiner::read_kernel_source() {
     std::vector<std::string> paths;
     const std::string edir = exe_directory();
     if (!edir.empty()) {
-        paths.push_back(edir + "/opencl/superhero.cl");
-        paths.push_back(edir + "/../opencl/superhero.cl");
+        paths.push_back(edir + "/opencl/btxmat.cl");
+        paths.push_back(edir + "/../opencl/btxmat.cl");
     }
-    paths.emplace_back("opencl/superhero.cl");
-    paths.emplace_back("../opencl/superhero.cl");
-    paths.emplace_back("/hive/miners/custom/superhero/opencl/superhero.cl");
-    paths.emplace_back("/hive/custom/superhero/opencl/superhero.cl");
+    paths.emplace_back("opencl/btxmat.cl");
+    paths.emplace_back("../opencl/btxmat.cl");
+    paths.emplace_back("/hive/miners/custom/btxmat/opencl/btxmat.cl");
+    paths.emplace_back("/hive/custom/btxmat/opencl/btxmat.cl");
 
     for (const std::string& p : paths) {
         std::ifstream in(p);
@@ -177,7 +183,7 @@ std::string GpuMiner::read_kernel_source() {
             return ss.str();
         }
     }
-    throw std::runtime_error("superhero.cl not found (searched next to binary and Hive paths)");
+    throw std::runtime_error("btxmat.cl not found (searched next to binary and Hive paths)");
 }
 
 bool GpuMiner::init(std::string* error) {
@@ -221,8 +227,36 @@ bool GpuMiner::init(std::string* error) {
     return true;
 }
 
-bool GpuMiner::ensure_buffers(std::string* error) {
-    if (buffers_ready_) return true;
+bool GpuMiner::ensure_scratch(size_t scratch_threads, std::string* error) {
+    if (scratch_threads <= scratch_threads_ && buf_scratch_) return true;
+
+    cl_context ctx = ctx_handle(cl_context_);
+    cl_int err = 0;
+    const size_t scratch_bytes = scratch_threads * kScratchWordsPerThread * sizeof(uint32_t);
+
+    if (buf_scratch_) {
+        clReleaseMemObject(mem_handle(buf_scratch_));
+        delete static_cast<cl_mem*>(buf_scratch_);
+        buf_scratch_ = nullptr;
+    }
+
+    cl_mem buf = clCreateBuffer(ctx, CL_MEM_READ_WRITE, scratch_bytes, nullptr, &err);
+    if (err != CL_SUCCESS || buf == nullptr) {
+        if (error) {
+            *error = "clCreateBuffer scratch failed (cl=" + std::to_string(err) +
+                     ", threads=" + std::to_string(scratch_threads) + ")";
+        }
+        return false;
+    }
+    buf_scratch_ = new cl_mem(buf);
+    scratch_threads_ = scratch_threads;
+    util::log(util::LogLevel::Info, "GPU scratch buffer: %zu threads (%zu MB)", scratch_threads,
+              scratch_bytes / (1024 * 1024));
+    return true;
+}
+
+bool GpuMiner::ensure_buffers(size_t scratch_threads, std::string* error) {
+    if (buffers_ready_ && scratch_threads <= scratch_threads_) return true;
     if (!ready_) {
         if (error) *error = "GPU not initialized";
         return false;
@@ -242,22 +276,25 @@ bool GpuMiner::ensure_buffers(std::string* error) {
     };
 
     try {
-        constexpr size_t matrix_elems = 512u * 512u;
-        constexpr size_t clean_elems = 32768u * 256u;
-        buf_a_ = create_buf(matrix_elems * sizeof(uint32_t), CL_MEM_READ_ONLY);
-        buf_b_ = create_buf(matrix_elems * sizeof(uint32_t), CL_MEM_READ_ONLY);
-        buf_clean_ = create_buf(clean_elems * sizeof(uint32_t), CL_MEM_READ_ONLY);
-        buf_header_ = create_buf(header_template_.size(), CL_MEM_READ_ONLY);
-        buf_target_ = create_buf(8 * sizeof(uint32_t), CL_MEM_READ_ONLY);
-        buf_found_ = create_buf(sizeof(int), CL_MEM_READ_WRITE);
-        buf_nonce_ = create_buf(sizeof(uint64_t), CL_MEM_READ_WRITE);
-        buf_digest_ = create_buf(32, CL_MEM_READ_WRITE);
+        if (!buffers_ready_) {
+            constexpr size_t matrix_elems = 512u * 512u;
+            constexpr size_t clean_elems = 32768u * 256u;
+            buf_a_ = create_buf(matrix_elems * sizeof(uint32_t), CL_MEM_READ_WRITE);
+            buf_b_ = create_buf(matrix_elems * sizeof(uint32_t), CL_MEM_READ_WRITE);
+            buf_clean_ = create_buf(clean_elems * sizeof(uint32_t), CL_MEM_READ_WRITE);
+            buf_header_ = create_buf(header_template_.size(), CL_MEM_READ_ONLY);
+            buf_target_ = create_buf(8 * sizeof(uint32_t), CL_MEM_READ_ONLY);
+            buf_found_ = create_buf(sizeof(int), CL_MEM_READ_WRITE);
+            buf_nonce_ = create_buf(sizeof(uint64_t), CL_MEM_READ_WRITE);
+            buf_digest_ = create_buf(32, CL_MEM_READ_WRITE);
+            buffers_ready_ = true;
+        }
+        if (!ensure_scratch(scratch_threads, error)) return false;
     } catch (const std::exception& e) {
         if (error) *error = e.what();
         return false;
     }
 
-    buffers_ready_ = true;
     GPU_STEP("GPU buffers ready");
     return true;
 }
@@ -285,8 +322,7 @@ bool GpuMiner::load_kernels(std::string* error) {
     }
     cl_program_ = new cl_program(program);
 
-    // CL1.2 + target device — avoids AMD driver crashes with nullptr device list
-    const char* opts = "-cl-std=CL1.2 -cl-opt-disable";
+    const char* opts = "-cl-std=CL1.2 -cl-mad-enable";
     GPU_STEP("clBuildProgram");
     err = clBuildProgram(program, 1, &device, opts, nullptr, nullptr);
     if (err != CL_SUCCESS) {
@@ -312,7 +348,7 @@ bool GpuMiner::load_kernels(std::string* error) {
     if (!k_build_matrix_) return false;
     k_build_clean_ = mk("build_clean_block");
     if (!k_build_clean_) return false;
-    k_mine_ = mk("superhero_mine");
+    k_mine_ = mk("btxmat_mine");
     if (!k_mine_) return false;
     return true;
 }
@@ -334,7 +370,9 @@ bool GpuMiner::build_header_template(const matmul::PowState& state) {
 bool GpuMiner::prepare_job(const matmul::PowState& state, const matmul::PowConfig& config, std::string* error) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!ready_ && !init(error)) return false;
-    if (!ensure_buffers(error)) return false;
+
+    const size_t scratch_threads = round_up_work(default_batch_, workgroup_size_);
+    if (!ensure_buffers(scratch_threads, error)) return false;
 
     build_header_template(state);
     const crypto::ArithUint256& tgt = config.target;
@@ -399,7 +437,9 @@ matmul::SolveResult GpuMiner::mine_batch(
 
     std::lock_guard<std::mutex> lock(mutex_);
     if (!ready_) return result;
-    if (!ensure_buffers(nullptr)) return result;
+
+    const size_t global = round_up_work(batch_size, workgroup_size_);
+    if (!ensure_buffers(global, nullptr)) return result;
 
     if (share_target) write_target_limbs(*share_target, target_limbs_);
 
@@ -419,6 +459,7 @@ matmul::SolveResult GpuMiner::mine_batch(
     cl_mem mc = mem_handle(buf_clean_);
     cl_mem mh = mem_handle(buf_header_);
     cl_mem mt = mem_handle(buf_target_);
+    cl_mem ms = mem_handle(buf_scratch_);
     clSetKernelArg(km, 0, sizeof(cl_mem), &ma);
     clSetKernelArg(km, 1, sizeof(cl_mem), &mb);
     clSetKernelArg(km, 2, sizeof(cl_mem), &mc);
@@ -432,11 +473,9 @@ matmul::SolveResult GpuMiner::mine_batch(
     clSetKernelArg(km, 6, sizeof(cl_mem), &found_buf);
     clSetKernelArg(km, 7, sizeof(cl_mem), &nonce_buf);
     clSetKernelArg(km, 8, sizeof(cl_mem), &digest_buf);
+    clSetKernelArg(km, 9, sizeof(cl_mem), &ms);
 
-    size_t global = batch_size;
     size_t local = workgroup_size_;
-    if (global % local != 0) global = ((global / local) + 1) * local;
-
     clEnqueueNDRangeKernel(queue, km, 1, nullptr, &global, &local, 0, nullptr, nullptr);
     clFinish(queue);
 

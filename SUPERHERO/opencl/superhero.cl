@@ -84,12 +84,6 @@ inline uint from_oracle(const uchar seed_le[32], uint index) {
     return cand % MOD;
 }
 
-inline uint from_oracle_g(__global const uchar* seed_le, uint index) {
-    uchar seed[32];
-    for (int i = 0; i < 32; ++i) seed[i] = seed_le[i];
-    return from_oracle(seed, index);
-}
-
 inline void derive_noise_seed(uchar tag0, uchar tag1, uchar tag2, uchar tag3, uchar tag4, uchar tag5,
                             uchar tag6, uchar tag7, uchar tag8, uchar tag9, uchar tag10, uchar tag11,
                             uchar tag12, uchar tag13, uchar tag14, uchar tag15, uchar tag16, uchar tag17,
@@ -109,15 +103,6 @@ inline uint mat_at_g(__global const uint* m, uint stride, uint row, uint col) {
 }
 inline uint mat_at_p(const uint* m, uint stride, uint row, uint col) {
     return m[(ulong)row * stride + col];
-}
-
-inline uint compress_dot_g(__global const uint* block, const uint* cv, uint len) {
-    ulong acc = 0; uint pending = 0;
-    for (uint i = 0; i < len; ++i) {
-        acc += (ulong)block[i] * (ulong)cv[i];
-        if (++pending == REDUCE_INTERVAL) { acc = m31_reduce64(acc); pending = 0; }
-    }
-    return m31_reduce64(acc);
 }
 
 inline uint oracle_el(const uchar seed[32], uint row, uint col) {
@@ -247,21 +232,14 @@ inline int digest_leq_target(const uchar dig_le[32], const uint target[8]) {
     return 1;
 }
 
-inline int digest_leq_target_g(const uchar dig_le[32], __global const uint* target) {
-    for (int i = 7; i >= 0; --i) {
-        uint d = ((uint)dig_le[i*4]) | ((uint)dig_le[i*4+1]<<8) | ((uint)dig_le[i*4+2]<<16) | ((uint)dig_le[i*4+3]<<24);
-        if (d < target[i]) return 1;
-        if (d > target[i]) return 0;
-    }
-    return 1;
-}
-
 // Build matrix[n][n] from seed - one thread per element
 __kernel void build_matrix_from_seed(__global const uchar* seed_le, __global uint* matrix, uint n) {
     uint idx = get_global_id(0);
     uint total = n * n;
     if (idx >= total) return;
-    matrix[idx] = from_oracle_g(seed_le, idx);
+    uchar seed[32];
+    for (int i = 0; i < 32; ++i) seed[i] = seed_le[i];
+    matrix[idx] = from_oracle(seed, idx);
 }
 
 // Build one clean block product - one thread per block (i,j,ell)
@@ -334,7 +312,18 @@ __kernel void superhero_mine(
             uint compressed_prefix = 0;
             for (uint ell = 0; ell < bpa; ++ell) {
                 const ulong bidx = ((ulong)i * bpa + j) * bpa + ell;
-                uint clean_c = compress_dot_g(clean_blocks + bidx * CLEAN_BLOCK_ELEMS, cv, b*b);
+                __global const uint* block = clean_blocks + bidx * CLEAN_BLOCK_ELEMS;
+                ulong dot_acc = 0;
+                uint dot_pending = 0;
+                const uint dot_len = b * b;
+                for (uint di = 0; di < dot_len; ++di) {
+                    dot_acc += (ulong)block[di] * (ulong)cv[di];
+                    if (++dot_pending == REDUCE_INTERVAL) {
+                        dot_acc = m31_reduce64(dot_acc);
+                        dot_pending = 0;
+                    }
+                }
+                uint clean_c = m31_reduce64(dot_acc);
                 uint af = compress_af_priv(matrix_a, seed_fl, seed_fr, i, ell, j, cv, n, b, r);
                 uint eb = compress_eb_priv(seed_el, seed_er, matrix_b, i, ell, j, cv, n, b, r);
                 uint ef = compress_ef_priv(seed_el, seed_er, seed_fl, seed_fr, i, ell, j, cv, n, b, r);
@@ -351,7 +340,13 @@ __kernel void superhero_mine(
     uchar dig[32];
     sha256d(inner_be, 32, dig);
 
-    if (digest_leq_target_g(dig, target_limbs)) {
+    int meets_target = 1;
+    for (int ti = 7; ti >= 0; --ti) {
+        uint d = ((uint)dig[ti*4]) | ((uint)dig[ti*4+1]<<8) | ((uint)dig[ti*4+2]<<16) | ((uint)dig[ti*4+3]<<24);
+        if (d < target_limbs[ti]) break;
+        if (d > target_limbs[ti]) { meets_target = 0; break; }
+    }
+    if (meets_target) {
         if (atomic_cmpxchg(found_flag, 0, 1) == 0) {
             *found_nonce = nonce;
             for (int i = 0; i < 32; ++i) found_digest[i] = dig[i];

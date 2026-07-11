@@ -13,7 +13,7 @@
 
 static void print_usage() {
     std::fprintf(stderr,
-        "SUPERHERO v0.2.6 - BTX (btx-matmul) GPU-only AMD miner for HiveOS\n\n"
+        "SUPERHERO v0.2.7 - BTX (btx-matmul) GPU-only AMD miner for HiveOS\n\n"
         "Usage:\n"
         "  superhero --pool HOST:PORT --wallet WALLET [options]\n"
         "  superhero --benchmark [--batch-size N]\n"
@@ -155,7 +155,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::fprintf(stderr, "SUPERHERO v0.2.6 GPU-only | %s | batch=%llu | pool=%s:%d\n",
+    std::fprintf(stderr, "SUPERHERO v0.2.7 GPU-only | %s | batch=%llu | pool=%s:%d\n",
                  superhero::gpu::GpuMiner::instance().device_name().c_str(),
                  static_cast<unsigned long long>(cfg.batch_size), cfg.pool_host.c_str(), cfg.pool_port);
     return superhero::stratum::run_miner(cfg);

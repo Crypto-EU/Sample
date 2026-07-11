@@ -84,6 +84,12 @@ inline uint from_oracle(const uchar seed_le[32], uint index) {
     return cand % MOD;
 }
 
+inline uint from_oracle_g(__global const uchar* seed_le, uint index) {
+    uchar seed[32];
+    for (int i = 0; i < 32; ++i) seed[i] = seed_le[i];
+    return from_oracle(seed, index);
+}
+
 inline void derive_noise_seed(uchar tag0, uchar tag1, uchar tag2, uchar tag3, uchar tag4, uchar tag5,
                             uchar tag6, uchar tag7, uchar tag8, uchar tag9, uchar tag10, uchar tag11,
                             uchar tag12, uchar tag13, uchar tag14, uchar tag15, uchar tag16, uchar tag17,
@@ -241,12 +247,21 @@ inline int digest_leq_target(const uchar dig_le[32], const uint target[8]) {
     return 1;
 }
 
+inline int digest_leq_target_g(const uchar dig_le[32], __global const uint* target) {
+    for (int i = 7; i >= 0; --i) {
+        uint d = ((uint)dig_le[i*4]) | ((uint)dig_le[i*4+1]<<8) | ((uint)dig_le[i*4+2]<<16) | ((uint)dig_le[i*4+3]<<24);
+        if (d < target[i]) return 1;
+        if (d > target[i]) return 0;
+    }
+    return 1;
+}
+
 // Build matrix[n][n] from seed - one thread per element
 __kernel void build_matrix_from_seed(__global const uchar* seed_le, __global uint* matrix, uint n) {
     uint idx = get_global_id(0);
     uint total = n * n;
     if (idx >= total) return;
-    matrix[idx] = from_oracle(seed_le, idx);
+    matrix[idx] = from_oracle_g(seed_le, idx);
 }
 
 // Build one clean block product - one thread per block (i,j,ell)
@@ -336,7 +351,7 @@ __kernel void superhero_mine(
     uchar dig[32];
     sha256d(inner_be, 32, dig);
 
-    if (digest_leq_target(dig, target_limbs)) {
+    if (digest_leq_target_g(dig, target_limbs)) {
         if (atomic_cmpxchg(found_flag, 0, 1) == 0) {
             *found_nonce = nonce;
             for (int i = 0; i < 32; ++i) found_digest[i] = dig[i];

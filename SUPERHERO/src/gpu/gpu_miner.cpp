@@ -16,6 +16,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <vector>
+#include <unistd.h>
 
 namespace superhero::gpu {
 namespace {
@@ -64,6 +65,17 @@ void write_target_limbs(const crypto::ArithUint256& target, std::array<uint32_t,
     std::memcpy(out.data(), u.data(), 32);
 }
 
+std::string exe_directory() {
+    char buf[4096];
+    const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0) return {};
+    buf[n] = '\0';
+    const std::string path(buf);
+    const auto pos = path.rfind('/');
+    if (pos == std::string::npos) return {};
+    return path.substr(0, pos);
+}
+
 }  // namespace
 
 GpuMiner& GpuMiner::instance() {
@@ -72,20 +84,27 @@ GpuMiner& GpuMiner::instance() {
 }
 
 std::string GpuMiner::read_kernel_source() {
-    const char* paths[] = {
-        "opencl/superhero.cl",
-        "../opencl/superhero.cl",
-        "/hive/miners/custom/superhero/opencl/superhero.cl",
-    };
-    for (const char* p : paths) {
+    std::vector<std::string> paths;
+    const std::string edir = exe_directory();
+    if (!edir.empty()) {
+        paths.push_back(edir + "/opencl/superhero.cl");
+        paths.push_back(edir + "/../opencl/superhero.cl");
+    }
+    paths.emplace_back("opencl/superhero.cl");
+    paths.emplace_back("../opencl/superhero.cl");
+    paths.emplace_back("/hive/miners/custom/superhero/opencl/superhero.cl");
+    paths.emplace_back("/hive/custom/superhero/opencl/superhero.cl");
+
+    for (const std::string& p : paths) {
         std::ifstream in(p);
         if (in) {
             std::ostringstream ss;
             ss << in.rdbuf();
+            util::log(util::LogLevel::Info, "OpenCL kernel: %s", p.c_str());
             return ss.str();
         }
     }
-    throw std::runtime_error("superhero.cl not found");
+    throw std::runtime_error("superhero.cl not found (searched next to binary and Hive paths)");
 }
 
 bool GpuMiner::init(std::string* error) {

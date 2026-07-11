@@ -105,7 +105,7 @@ inline uint mat_at_p(const uint* m, uint stride, uint row, uint col) {
     return m[(ulong)row * stride + col];
 }
 
-inline uint compress_dot(const uint* block, const uint* cv, uint len) {
+inline uint compress_dot_g(__global const uint* block, const uint* cv, uint len) {
     ulong acc = 0; uint pending = 0;
     for (uint i = 0; i < len; ++i) {
         acc += (ulong)block[i] * (ulong)cv[i];
@@ -319,7 +319,7 @@ __kernel void superhero_mine(
             uint compressed_prefix = 0;
             for (uint ell = 0; ell < bpa; ++ell) {
                 const ulong bidx = ((ulong)i * bpa + j) * bpa + ell;
-                uint clean_c = compress_dot(clean_blocks + bidx * CLEAN_BLOCK_ELEMS, cv, b*b);
+                uint clean_c = compress_dot_g(clean_blocks + bidx * CLEAN_BLOCK_ELEMS, cv, b*b);
                 uint af = compress_af_priv(matrix_a, seed_fl, seed_fr, i, ell, j, cv, n, b, r);
                 uint eb = compress_eb_priv(seed_el, seed_er, matrix_b, i, ell, j, cv, n, b, r);
                 uint ef = compress_ef_priv(seed_el, seed_er, seed_fl, seed_fr, i, ell, j, cv, n, b, r);

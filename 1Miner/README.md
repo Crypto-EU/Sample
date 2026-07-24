@@ -1,6 +1,7 @@
 # 1Miner
 
-Open-Source **Saseul**-Miner für **AMD (OpenCL)** und **CPU**, mit optionalem NVIDIA-OpenCL.
+Open-Source **Saseul**-Miner **nur für AMD-GPUs** (OpenCL).
+Kein NVIDIA, kein CPU-Mining.
 HiveOS-Custom-Miner-Paket inklusive.
 
 ## Warum 1Miner?
@@ -8,12 +9,11 @@ HiveOS-Custom-Miner-Paket inklusive.
 | | saseul-miner (saseulpool) | hasher (RabbitMiner) | **1Miner** |
 |--|--|--|--|
 | Protokoll | NATS | login/getjob (TLS/TCP) | **beides** |
-| AMD | nein (nur CUDA) | OpenCL | **OpenCL** |
-| NVIDIA | CUDA | CUDA/OpenCL | OpenCL-ICD / CPU |
+| AMD | nein (nur CUDA) | OpenCL | **OpenCL only** |
+| NVIDIA | CUDA | CUDA/OpenCL | **nein** |
+| CPU | — | optional | **nein** |
 | Quellcode | geschlossen | geschlossen | **offen (MIT)** |
 | HiveOS | ja | ja | **ja** |
-
-Architektur angelehnt an hasher (OpenCL-Backend, HiveOS-Wrapper, GPU-Status) und saseul-miner (NATS, Stats-JSON), aber als **Clean-Room**-Implementierung ohne Übernahme proprietärer Kernel.
 
 ## Build
 
@@ -23,32 +23,19 @@ cmake -S 1Miner -B 1Miner/build -DCMAKE_BUILD_TYPE=Release
 cmake --build 1Miner/build -j$(nproc)
 ```
 
-HiveOS-Archiv bauen:
+HiveOS-Archiv:
 
 ```bash
 1Miner/scripts/package-hive.sh
-# → 1Miner/releases/1miner-hive-1.0.1.tar.gz
-# Inhalt: 1miner-hive/h-manifest.conf … (Ordnername muss zum Archiv passen)
+# → 1Miner/releases/1miner-hive-1.0.2.tar.gz
 ```
 
 ## Beispiele
 
-RabbitMiner (SSL-Standardport 1901 — TLS automatisch):
-
 ```bash
-./1miner --pool nl.rabbitminer.cc:1901 --wallet WALLET.worker --amd-ocl --use-cpu
-```
-
-TCP Sync (Port 1931 — **ohne** TLS, Fix für den bekannten `TLS connect failed`-Fehler):
-
-```bash
-./1miner --pool nl.rabbitminer.cc:1931 --wallet WALLET.worker --amd-ocl
-```
-
-saseulpool.com (NATS):
-
-```bash
-./1miner --nats nats://nats.saseulpool.com:4222 --wallet WALLET --id rig1 --use-cpu
+./1miner --pool nl.rabbitminer.cc:1901 --wallet WALLET.worker
+./1miner --pool nl.rabbitminer.cc:1931 --wallet WALLET.worker
+./1miner --nats nats://nats.saseulpool.com:4222 --wallet WALLET --id rig1
 ```
 
 ## HiveOS Flight Sheet
@@ -56,12 +43,11 @@ saseulpool.com (NATS):
 - **Miner:** Custom  
 - **Name:** `1miner-hive`  
 - **Installation URL:**  
-  `https://raw.githubusercontent.com/Crypto-EU/Sample/cursor/1miner-amd-hiveos-3705/1Miner/releases/1miner-hive-1.0.1.tar.gz`  
-- **Pool URL:** z. B. `nl.rabbitminer.cc:1901` oder `nats://nats.saseulpool.com:4222`  
+  `https://raw.githubusercontent.com/Crypto-EU/Sample/cursor/1miner-amd-hiveos-3705/1Miner/releases/1miner-hive-1.0.2.tar.gz`  
+- **Pool URL:** z. B. `nl.rabbitminer.cc:1901`  
 - **Wallet template:** `%WAL%.%WORKER_NAME%`  
-- **Extra config:** `--amd-ocl --use-cpu` (oder `--nonce-mode latehex`)
-
-Port-Zuordnung RabbitMiner/Saseul:
+- **Extra config:** leer lassen, oder z. B. `--device 0,1` / `--nonce-mode latehex`  
+  (nicht `--use-cpu` / `--cuda` / `--nvidia-ocl`)
 
 | Port | Modus |
 |------|--------|
@@ -70,11 +56,6 @@ Port-Zuordnung RabbitMiner/Saseul:
 | 1911 | TCP Standard |
 | 1931 | TCP Sync (kein TLS!) |
 
-## PoW
-
-Klassisch: `SHA256(ASCII(previous_blockhash[78] + digest[64] + nonce[16]))`, Target = `2^256 / share_difficulty`.
-Latehex: Nonce 40 Hex (`24` Prefix + `16` Counter).
-
 ## Hinweis
 
-1Miner ist eine unabhängige Open-Source-Neuimplementierung. Hashrate und Share-Akzeptanz können von den Closed-Source-Minern abweichen, solange Kernel weiter optimiert werden. Beiträge willkommen.
+Ohne AMD-OpenCL-Gerät beendet 1Miner mit Fehler. NVIDIA- und CPU-Backends sind absichtlich deaktiviert.

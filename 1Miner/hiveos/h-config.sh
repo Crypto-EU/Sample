@@ -2,7 +2,8 @@
 # Builds command-line arguments for 1Miner from Hive OS Flight Sheet fields.
 # Pool URL              -> --pool or --nats (auto-detected)
 # Wallet/work template  -> --wallet
-# Extra config args     -> appended as-is, e.g. --amd-ocl --use-cpu
+# Extra config args     -> optional, e.g. --device 0,1 --nonce-mode latehex
+# Backend is always AMD OpenCL (CPU/NVIDIA disabled).
 
 set -euo pipefail
 
@@ -23,6 +24,12 @@ pool="$(trim "${CUSTOM_URL:-}")"
 wallet="$(trim "${CUSTOM_TEMPLATE:-}")"
 extra="$(trim "${CUSTOM_USER_CONFIG:-}")"
 
+# Reject legacy CPU/NVIDIA flags if pasted into Extra config.
+if [[ "$extra" == *"--use-cpu"* || "$extra" == *"--cuda"* || "$extra" == *"--nvidia-ocl"* ]]; then
+  echo "[1miner] ERROR: CPU/NVIDIA flags are not supported (AMD-only)" >&2
+  exit 1
+fi
+
 cmd=""
 
 if [[ -n "$pool" ]]; then
@@ -37,13 +44,13 @@ if [[ -n "$wallet" ]]; then
   cmd+=" --wallet $(printf '%q' "$wallet")"
 fi
 
-# Default AMD/OpenCL-friendly flags if user did not pass a backend.
+# Always AMD OpenCL.
+cmd+=" --amd-ocl"
+
 if [[ -n "$extra" ]]; then
   cmd+=" $extra"
-elif [[ "$cmd" != *"--use-cpu"* && "$cmd" != *"--opencl"* && "$cmd" != *"--amd-ocl"* ]]; then
-  cmd+=" --amd-ocl --use-cpu"
 fi
 
 printf '%s\n' "${cmd# }" > "$CUSTOM_CONFIG_FILENAME"
-echo "[1miner] Config written:"
+echo "[1miner] Config written (AMD-only):"
 cat "$CUSTOM_CONFIG_FILENAME"

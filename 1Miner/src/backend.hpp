@@ -61,6 +61,7 @@ class CpuBackend {
 class OpenClBackend {
  public:
   OpenClBackend();
+  ~OpenClBackend();
   bool init(std::string& err);
   int device_count() const { return static_cast<int>(devices_.size()); }
   std::string device_name(int i) const;
@@ -76,7 +77,10 @@ class OpenClBackend {
     void* context = nullptr;
     void* queue = nullptr;
     void* program = nullptr;
-    void* kernel = nullptr;
+    void* kernel = nullptr;       // mine_classic_fast
+    void* kernel_hi32 = nullptr;  // mine_classic_hi32
+    void* job_mem = nullptr;
+    void* res_mem = nullptr;
     std::string name;
     size_t max_work_group = 256;
     unsigned compute_units = 1;

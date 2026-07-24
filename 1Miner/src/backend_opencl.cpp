@@ -58,31 +58,125 @@ std::string load_kernel_source() {
   return {};
 }
 
+static inline uint32_t rotr32(uint32_t x, uint32_t n) {
+  return (x >> n) | (x << (32u - n));
+}
+static inline uint32_t ch(uint32_t x, uint32_t y, uint32_t z) {
+  return (x & y) ^ (~x & z);
+}
+static inline uint32_t maj(uint32_t x, uint32_t y, uint32_t z) {
+  return (x & y) ^ (x & z) ^ (y & z);
+}
+static inline uint32_t bsig0(uint32_t x) {
+  return rotr32(x, 2) ^ rotr32(x, 13) ^ rotr32(x, 22);
+}
+static inline uint32_t bsig1(uint32_t x) {
+  return rotr32(x, 6) ^ rotr32(x, 11) ^ rotr32(x, 25);
+}
+
+static constexpr uint32_t kK256[64] = {
+    0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu, 0x59f111f1u, 0x923f82a4u,
+    0xab1c5ed5u, 0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u, 0x72be5d74u, 0x80deb1feu,
+    0x9bdc06a7u, 0xc19bf174u, 0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu, 0x2de92c6fu,
+    0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau, 0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u,
+    0xc6e00bf3u, 0xd5a79147u, 0x06ca6351u, 0x14292967u, 0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu,
+    0x53380d13u, 0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u, 0xa2bfe8a1u, 0xa81a664bu,
+    0xc24b8b70u, 0xc76c51a3u, 0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u, 0x19a4c116u,
+    0x1e376c08u, 0x2748774cu, 0x34b0bcb5u, 0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu, 0x682e6ff3u,
+    0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u, 0x90befffau, 0xa4506cebu, 0xbef9a3f7u,
+    0xc67178f2u};
+
+// Run the first `nrounds` SHA256 rounds; out_work = working regs (not yet + mid).
+static void sha256_partial_work(const uint32_t mid[8], const uint32_t w_in[16], int nrounds,
+                                uint32_t out_work[8]) {
+  uint32_t w[16];
+  for (int i = 0; i < 16; ++i) w[i] = w_in[i];
+  uint32_t a = mid[0], b = mid[1], c = mid[2], d = mid[3];
+  uint32_t e = mid[4], f = mid[5], g = mid[6], h = mid[7];
+  for (int i = 0; i < nrounds; ++i) {
+    uint32_t wi;
+    if (i < 16) {
+      wi = w[i];
+    } else {
+      const uint32_t s0 = rotr32(w[(i - 15) & 15], 7) ^ rotr32(w[(i - 15) & 15], 18) ^
+                          (w[(i - 15) & 15] >> 3);
+      const uint32_t s1 = rotr32(w[(i - 2) & 15], 17) ^ rotr32(w[(i - 2) & 15], 19) ^
+                          (w[(i - 2) & 15] >> 10);
+      wi = w[i & 15] = s1 + w[(i - 7) & 15] + s0 + w[i & 15];
+    }
+    const uint32_t t1 = h + bsig1(e) + ch(e, f, g) + kK256[i] + wi;
+    const uint32_t t2 = bsig0(a) + maj(a, b, c);
+    h = g;
+    g = f;
+    f = e;
+    e = d + t1;
+    d = c;
+    c = b;
+    b = a;
+    a = t1 + t2;
+  }
+  out_work[0] = a;
+  out_work[1] = b;
+  out_work[2] = c;
+  out_work[3] = d;
+  out_work[4] = e;
+  out_work[5] = f;
+  out_work[6] = g;
+  out_work[7] = h;
+}
+
+static uint32_t hex_pair_byte(uint8_t byte) {
+  auto nib = [](uint8_t n) -> uint32_t {
+    return static_cast<uint32_t>(n) + 0x30u + (((static_cast<uint32_t>(n) + 6u) >> 4) * 0x27u);
+  };
+  return (nib(static_cast<uint8_t>((byte >> 4) & 15u)) << 8) | nib(static_cast<uint8_t>(byte & 15u));
+}
+
+static void encode_hi32_words(uint32_t hi, uint32_t& h0, uint32_t& h1) {
+  const uint32_t p0 = hex_pair_byte(static_cast<uint8_t>((hi >> 24) & 255u));
+  const uint32_t p1 = hex_pair_byte(static_cast<uint8_t>((hi >> 16) & 255u));
+  const uint32_t p2 = hex_pair_byte(static_cast<uint8_t>((hi >> 8) & 255u));
+  const uint32_t p3 = hex_pair_byte(static_cast<uint8_t>(hi & 255u));
+  h0 = (p0 << 16) | p1;
+  h1 = (p2 << 16) | p3;
+}
+
 }  // namespace
 
-// Must match opencl_kernels.cl JobBlob / ResultBlob exactly (natural C alignment).
+// Must match opencl_kernels.cl JobBlob / ResultBlob.
 struct JobBlobHost {
   uint32_t midstate[8];
-  uint32_t prefix_tail[16];
-  uint32_t prefix_tail_len;
+  uint32_t block0[16];
   uint32_t target[8];
-  uint32_t _pad_align8;
-  uint64_t start_counter;
-  uint64_t count;
+  uint32_t work_after_r2[8];
+  uint32_t work_after_r4[8];
+  uint32_t flags;
+  uint32_t _pad;
 };
 struct ResultBlobHost {
   uint32_t found;
-  uint32_t _pad_align8;
+  uint32_t _pad;
   uint64_t counter;
   uint32_t hash[8];
 };
 
-static_assert(sizeof(JobBlobHost) == 152, "JobBlobHost must match OpenCL JobBlob (152 bytes)");
-static_assert(offsetof(JobBlobHost, start_counter) == 136, "start_counter offset mismatch");
-static_assert(offsetof(JobBlobHost, count) == 144, "count offset mismatch");
-static_assert(sizeof(ResultBlobHost) == 48, "ResultBlobHost must match OpenCL ResultBlob");
+static_assert(sizeof(JobBlobHost) == 200, "JobBlobHost size");
+static_assert(sizeof(ResultBlobHost) == 48, "ResultBlobHost size");
 
 OpenClBackend::OpenClBackend() = default;
+
+OpenClBackend::~OpenClBackend() {
+  for (auto& d : devices_) {
+    if (!d) continue;
+    if (d->job_mem) clReleaseMemObject(static_cast<cl_mem>(d->job_mem));
+    if (d->res_mem) clReleaseMemObject(static_cast<cl_mem>(d->res_mem));
+    if (d->kernel) clReleaseKernel(static_cast<cl_kernel>(d->kernel));
+    if (d->kernel_hi32) clReleaseKernel(static_cast<cl_kernel>(d->kernel_hi32));
+    if (d->program) clReleaseProgram(static_cast<cl_program>(d->program));
+    if (d->queue) clReleaseCommandQueue(static_cast<cl_command_queue>(d->queue));
+    if (d->context) clReleaseContext(static_cast<cl_context>(d->context));
+  }
+}
 
 bool OpenClBackend::init(std::string& err) {
   kernel_source_ = load_kernel_source();
@@ -101,84 +195,51 @@ bool OpenClBackend::init(std::string& err) {
     }
     return false;
   };
-  auto is_nvidia = [&](const std::string& a, const std::string& b) {
-    return contains_any(a, {"nvidia"}) || contains_any(b, {"nvidia", "geforce", "quadro", "tesla", "rtx ", "gtx ", "cmp "});
+  auto is_nvidia = [&](const std::string& v, const std::string& n) {
+    return contains_any(v, {"nvidia"}) || contains_any(n, {"nvidia", "geforce", "quadro", "tesla", "rtx ", "gtx "});
   };
-  auto is_intel = [&](const std::string& a, const std::string& b) {
-    return contains_any(a, {"intel"}) || contains_any(b, {"intel", "uhd graphics", "iris"});
+  auto is_intel = [&](const std::string& v, const std::string& n) {
+    return contains_any(v, {"intel"}) || contains_any(n, {"intel"});
   };
-  auto is_amdish = [&](const std::string& vendor_l, const std::string& name_l, const std::string& plat_l) {
-    if (contains_any(vendor_l, {"advanced micro devices", "amd", "ati"})) return true;
-    if (contains_any(name_l, {"radeon", "amd ", "gfx", "ellesmere", "polaris", "vega", "navi",
-                              "instinct", "firepro", "rx ", "r9 ", "r7 ", "hawaii", "fiji",
-                              "tonga", "pitcairn", "bonaire", "algol"}))
-      return true;
-    if (contains_any(plat_l, {"advanced micro devices", "amd accelerated", "amd ", "rocm"})) return true;
-    if (contains_any(vendor_l, {"mesa"}) &&
-        contains_any(name_l, {"amd", "radeon", "gfx", "llvm"}))
-      return true;
-    return false;
+  auto is_amdish = [&](const std::string& v, const std::string& n, const std::string& p) {
+    return contains_any(v, {"amd", "advanced micro devices", "ati"}) ||
+           contains_any(n, {"amd", "radeon", "gfx", "vega", "navi", "instinct"}) ||
+           contains_any(p, {"amd", "rocm", "mesa"});
   };
 
   cl_uint nplat = 0;
   cl_int rc = clGetPlatformIDs(0, nullptr, &nplat);
   if (rc != CL_SUCCESS || nplat == 0) {
-    err = "no OpenCL platforms (install AMD OpenCL ICD / amdgpu-pro or ROCm; check clinfo)";
+    err = "no OpenCL platforms";
     return false;
   }
   std::vector<cl_platform_id> plats(nplat);
   clGetPlatformIDs(nplat, plats.data(), nullptr);
-  log_info("OpenCL platforms: " + std::to_string(nplat));
 
   std::string diag;
+  for (cl_platform_id plat : plats) {
+    char pvendor[256] = {0};
+    char pname[256] = {0};
+    clGetPlatformInfo(plat, CL_PLATFORM_VENDOR, sizeof(pvendor), pvendor, nullptr);
+    clGetPlatformInfo(plat, CL_PLATFORM_NAME, sizeof(pname), pname, nullptr);
+    const std::string plat_l = lower(std::string(pvendor) + " " + pname);
+    diag += std::string(" platform=") + pname;
 
-  for (auto plat : plats) {
-    char plat_vendor[256] = {0};
-    char plat_name[256] = {0};
-    clGetPlatformInfo(plat, CL_PLATFORM_VENDOR, sizeof(plat_vendor), plat_vendor, nullptr);
-    clGetPlatformInfo(plat, CL_PLATFORM_NAME, sizeof(plat_name), plat_name, nullptr);
-    const std::string pv_l = lower(plat_vendor);
-    const std::string pn_l = lower(plat_name);
-    const std::string plat_l = pv_l + " " + pn_l;
-    log_info(std::string("OpenCL platform: vendor=\"") + plat_vendor + "\" name=\"" + plat_name + "\"");
-
-    if (is_nvidia(pv_l, pn_l)) {
-      log_info("skip NVIDIA platform");
-      diag += "skipped NVIDIA platform; ";
-      continue;
-    }
-
-    cl_device_type type = CL_DEVICE_TYPE_GPU;
     cl_uint ndev = 0;
-    rc = clGetDeviceIDs(plat, type, 0, nullptr, &ndev);
-    if (rc != CL_SUCCESS || ndev == 0) {
-      type = CL_DEVICE_TYPE_ALL;
-      ndev = 0;
-      rc = clGetDeviceIDs(plat, type, 0, nullptr, &ndev);
-    }
-    if (rc != CL_SUCCESS || ndev == 0) {
-      log_info("platform has no OpenCL devices");
-      continue;
-    }
+    clGetDeviceIDs(plat, CL_DEVICE_TYPE_GPU, 0, nullptr, &ndev);
+    if (ndev == 0) continue;
     std::vector<cl_device_id> devs(ndev);
-    clGetDeviceIDs(plat, type, ndev, devs.data(), nullptr);
+    clGetDeviceIDs(plat, CL_DEVICE_TYPE_GPU, ndev, devs.data(), nullptr);
 
-    for (auto dev : devs) {
-      char name[256] = {0};
+    for (cl_device_id dev : devs) {
       char vendor[256] = {0};
-      cl_device_type dtype = 0;
-      clGetDeviceInfo(dev, CL_DEVICE_NAME, sizeof(name), name, nullptr);
+      char name[256] = {0};
       clGetDeviceInfo(dev, CL_DEVICE_VENDOR, sizeof(vendor), vendor, nullptr);
-      clGetDeviceInfo(dev, CL_DEVICE_TYPE, sizeof(dtype), &dtype, nullptr);
+      clGetDeviceInfo(dev, CL_DEVICE_NAME, sizeof(name), name, nullptr);
       const std::string vendor_l = lower(vendor);
       const std::string name_l = lower(name);
-      log_info(std::string("  device: vendor=\"") + vendor + "\" name=\"" + name + "\" type=" +
-               std::to_string(static_cast<unsigned long long>(dtype)));
+      log_info(std::string("OpenCL device: ") + name + " [" + vendor + "]");
 
-      if (!(dtype & CL_DEVICE_TYPE_GPU) && !(dtype & CL_DEVICE_TYPE_ACCELERATOR)) {
-        log_info("  skip non-GPU device");
-        continue;
-      }
       if (is_nvidia(vendor_l, name_l)) {
         log_info("  skip NVIDIA device");
         continue;
@@ -215,7 +276,8 @@ bool OpenClBackend::init(std::string& err) {
         clReleaseContext(ctx);
         continue;
       }
-      rc = clBuildProgram(prog, 1, &dev, "-cl-std=CL1.2 -DSASEUL_AMD_OPENCL=1", nullptr, nullptr);
+      rc = clBuildProgram(prog, 1, &dev, "-cl-std=CL1.2 -DSASEUL_AMD_OPENCL=1 -cl-mad-enable",
+                          nullptr, nullptr);
       if (rc != CL_SUCCESS) {
         size_t log_size = 0;
         clGetProgramBuildInfo(prog, dev, CL_PROGRAM_BUILD_LOG, 0, nullptr, &log_size);
@@ -228,8 +290,40 @@ bool OpenClBackend::init(std::string& err) {
         clReleaseContext(ctx);
         continue;
       }
-      cl_kernel ker = clCreateKernel(prog, "mine_classic", &rc);
+      cl_kernel ker = clCreateKernel(prog, "mine_classic_fast", &rc);
       if (rc != CL_SUCCESS) {
+        clReleaseProgram(prog);
+        clReleaseCommandQueue(q);
+        clReleaseContext(ctx);
+        continue;
+      }
+      cl_kernel ker_hi = clCreateKernel(prog, "mine_classic_hi32", &rc);
+      if (rc != CL_SUCCESS) {
+        clReleaseKernel(ker);
+        clReleaseProgram(prog);
+        clReleaseCommandQueue(q);
+        clReleaseContext(ctx);
+        continue;
+      }
+
+      JobBlobHost zjob{};
+      ResultBlobHost zres{};
+      cl_mem job_mem =
+          clCreateBuffer(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(zjob), &zjob, &rc);
+      if (rc != CL_SUCCESS || !job_mem) {
+        clReleaseKernel(ker_hi);
+        clReleaseKernel(ker);
+        clReleaseProgram(prog);
+        clReleaseCommandQueue(q);
+        clReleaseContext(ctx);
+        continue;
+      }
+      cl_mem res_mem =
+          clCreateBuffer(ctx, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(zres), &zres, &rc);
+      if (rc != CL_SUCCESS || !res_mem) {
+        clReleaseMemObject(job_mem);
+        clReleaseKernel(ker_hi);
+        clReleaseKernel(ker);
         clReleaseProgram(prog);
         clReleaseCommandQueue(q);
         clReleaseContext(ctx);
@@ -247,16 +341,20 @@ bool OpenClBackend::init(std::string& err) {
       d->queue = q;
       d->program = prog;
       d->kernel = ker;
+      d->kernel_hi32 = ker_hi;
+      d->job_mem = job_mem;
+      d->res_mem = res_mem;
       d->name = name;
       d->max_work_group = max_wg ? max_wg : 256;
       d->compute_units = cu ? cu : 1;
       devices_.push_back(std::move(d));
-      log_info(std::string("AMD OpenCL GPU ready: ") + name + " cu=" + std::to_string(cu) +
-               " max_wg=" + std::to_string(max_wg));
+      log_info(std::string("AMD OpenCL GPU ready (fast+hi32): ") + name +
+               " cu=" + std::to_string(cu) + " max_wg=" + std::to_string(max_wg));
     }
   }
   if (devices_.empty()) {
-    err = "no AMD OpenCL GPUs found (NVIDIA/CPU disabled). Run clinfo on the rig and check amdgpu OpenCL ICD. " + diag;
+    err = "no AMD OpenCL GPUs found (NVIDIA/CPU disabled). Run clinfo on the rig and check amdgpu OpenCL ICD. " +
+          diag;
     return false;
   }
   return true;
@@ -282,11 +380,11 @@ std::vector<ShareCandidate> OpenClBackend::scan(int device_index, uint64_t start
                                                 std::atomic<bool>& stop_flag) {
   std::vector<ShareCandidate> found;
   if (device_index < 0 || device_index >= device_count() || stop_flag.load()) return found;
-
-  if (job.mode != NonceMode::Classic) {
+  if (job.mode != NonceMode::Classic || count == 0) return found;
+  if (job.prefix_ascii.size() < 142) {
+    log_warn("OpenCL scan: prefix too short");
     return found;
   }
-  if (count == 0) return found;
 
   auto& d = *devices_[static_cast<size_t>(device_index)];
 
@@ -296,98 +394,115 @@ std::vector<ShareCandidate> OpenClBackend::scan(int device_index, uint64_t start
     blob.target[i] = (uint32_t(job.target[i * 4]) << 24) | (uint32_t(job.target[i * 4 + 1]) << 16) |
                      (uint32_t(job.target[i * 4 + 2]) << 8) | uint32_t(job.target[i * 4 + 3]);
   }
-  if (job.prefix_ascii.size() < 142) {
-    log_warn("OpenCL scan: prefix too short");
-    return found;
-  }
+
   const auto* p = reinterpret_cast<const uint8_t*>(job.prefix_ascii.data());
-  const size_t rem_off = 128;
-  uint8_t rem[64] = {0};
-  for (size_t i = 0; i < 14; ++i) rem[i] = p[rem_off + i];
-  for (int i = 0; i < 16; ++i) {
-    blob.prefix_tail[i] = (uint32_t(rem[i * 4]) << 24) | (uint32_t(rem[i * 4 + 1]) << 16) |
-                          (uint32_t(rem[i * 4 + 2]) << 8) | uint32_t(rem[i * 4 + 3]);
-  }
-  blob.prefix_tail_len = 14;
-  blob._pad_align8 = 0;
-  blob.start_counter = start;
-  blob.count = count;
+  uint8_t rem[16] = {0};
+  for (size_t i = 0; i < 14; ++i) rem[i] = p[128 + i];
 
-  ResultBlobHost result{};
+  auto be4 = [](uint8_t a, uint8_t b, uint8_t c, uint8_t d) -> uint32_t {
+    return (uint32_t(a) << 24) | (uint32_t(b) << 16) | (uint32_t(c) << 8) | uint32_t(d);
+  };
+  blob.block0[0] = be4(rem[0], rem[1], rem[2], rem[3]);
+  blob.block0[1] = be4(rem[4], rem[5], rem[6], rem[7]);
+  blob.block0[2] = be4(rem[8], rem[9], rem[10], rem[11]);
+  blob.block0[3] = (uint32_t(rem[12]) << 24) | (uint32_t(rem[13]) << 16);  // low 16 = nonce
+  for (int i = 4; i < 15; ++i) blob.block0[i] = 0;
+  blob.block0[15] = 0x000004f0u;  // bit length 158*8
+
+  // Precompute rounds 0..2 (depend only on fixed rem[0..11]).
+  {
+    uint32_t w[16] = {};
+    for (int i = 0; i < 16; ++i) w[i] = blob.block0[i];
+    sha256_partial_work(blob.midstate, w, 3, blob.work_after_r2);
+    blob.flags = 1u;
+  }
+
+  // Prefer hi32 kernel when the whole batch stays in one uint32 window.
+  const bool use_hi32 =
+      ((start >> 32) == ((start + count - 1) >> 32)) && count <= 0xffffffffull;
+  uint32_t h0 = 0, h1 = 0;
+  if (use_hi32) {
+    encode_hi32_words(static_cast<uint32_t>(start >> 32), h0, h1);
+    uint32_t w[16] = {};
+    for (int i = 0; i < 16; ++i) w[i] = blob.block0[i];
+    w[3] = (blob.block0[3] & 0xFFFF0000u) | ((h0 >> 16) & 0xFFFFu);
+    w[4] = ((h0 & 0xFFFFu) << 16) | ((h1 >> 16) & 0xFFFFu);
+    // w5..w7 still zero here; rounds 0..4 only need w0..w4
+    sha256_partial_work(blob.midstate, w, 5, blob.work_after_r4);
+    blob.flags |= 2u;
+  }
+
   cl_int rc = CL_SUCCESS;
-  cl_mem job_buf =
-      clCreateBuffer(static_cast<cl_context>(d.context), CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-                     sizeof(blob), &blob, &rc);
-  if (rc != CL_SUCCESS || !job_buf) {
-    log_warn("clCreateBuffer(job) rc=" + std::to_string(rc));
+  cl_command_queue q = static_cast<cl_command_queue>(d.queue);
+  cl_mem job_mem = static_cast<cl_mem>(d.job_mem);
+  cl_mem res_mem = static_cast<cl_mem>(d.res_mem);
+
+  ResultBlobHost zero{};
+  rc = clEnqueueWriteBuffer(q, job_mem, CL_FALSE, 0, sizeof(blob), &blob, 0, nullptr, nullptr);
+  if (rc != CL_SUCCESS) {
+    log_warn("clEnqueueWriteBuffer(job) rc=" + std::to_string(rc));
     return found;
   }
-  cl_mem res_buf =
-      clCreateBuffer(static_cast<cl_context>(d.context), CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
-                     sizeof(result), &result, &rc);
-  if (rc != CL_SUCCESS || !res_buf) {
-    log_warn("clCreateBuffer(result) rc=" + std::to_string(rc));
-    clReleaseMemObject(job_buf);
+  rc = clEnqueueWriteBuffer(q, res_mem, CL_FALSE, 0, sizeof(zero), &zero, 0, nullptr, nullptr);
+  if (rc != CL_SUCCESS) {
+    log_warn("clEnqueueWriteBuffer(res) rc=" + std::to_string(rc));
     return found;
   }
 
-  cl_kernel ker = static_cast<cl_kernel>(d.kernel);
-  rc = clSetKernelArg(ker, 0, sizeof(cl_mem), &job_buf);
-  if (rc != CL_SUCCESS) {
-    log_warn("clSetKernelArg(0) rc=" + std::to_string(rc));
-    clReleaseMemObject(job_buf);
-    clReleaseMemObject(res_buf);
-    return found;
+  cl_kernel ker = static_cast<cl_kernel>(use_hi32 ? d.kernel_hi32 : d.kernel);
+  int arg = 0;
+  rc = clSetKernelArg(ker, arg++, sizeof(cl_mem), &job_mem);
+  rc |= clSetKernelArg(ker, arg++, sizeof(cl_ulong), &start);
+  rc |= clSetKernelArg(ker, arg++, sizeof(cl_ulong), &count);
+  if (use_hi32) {
+    rc |= clSetKernelArg(ker, arg++, sizeof(cl_uint), &h0);
+    rc |= clSetKernelArg(ker, arg++, sizeof(cl_uint), &h1);
   }
-  rc = clSetKernelArg(ker, 1, sizeof(cl_mem), &res_buf);
+  rc |= clSetKernelArg(ker, arg++, sizeof(cl_mem), &res_mem);
   if (rc != CL_SUCCESS) {
-    log_warn("clSetKernelArg(1) rc=" + std::to_string(rc));
-    clReleaseMemObject(job_buf);
-    clReleaseMemObject(res_buf);
+    log_warn("clSetKernelArg rc=" + std::to_string(rc));
     return found;
   }
 
-  // Prefer enough work-items for the GPU; each item strides through the batch.
-  size_t global = static_cast<size_t>(d.compute_units) * d.max_work_group * 8;
-  if (global < 65536) global = 65536;
+  // Saturate the GPU: many wavefronts per CU.
+  size_t global = static_cast<size_t>(d.compute_units) * d.max_work_group * 32;
+  if (global < 262144) global = 262144;
   if (global > static_cast<size_t>(count)) global = static_cast<size_t>(count);
   if (global == 0) global = 1;
-  // Round down to work-group multiple when possible.
-  if (d.max_work_group > 0 && global >= d.max_work_group) {
-    global = (global / d.max_work_group) * d.max_work_group;
+  size_t local = d.max_work_group;
+  if (local > 256) local = 256;
+  if (local == 0) local = 64;
+  if (global < local) local = global;
+  global = (global / local) * local;
+  if (global == 0) {
+    global = local;
   }
 
   const auto t0 = std::chrono::steady_clock::now();
-  rc = clEnqueueNDRangeKernel(static_cast<cl_command_queue>(d.queue), ker, 1, nullptr, &global,
-                              nullptr, 0, nullptr, nullptr);
+  rc = clEnqueueNDRangeKernel(q, ker, 1, nullptr, &global, &local, 0, nullptr, nullptr);
+  if (rc != CL_SUCCESS) {
+    // Retry without explicit local size.
+    rc = clEnqueueNDRangeKernel(q, ker, 1, nullptr, &global, nullptr, 0, nullptr, nullptr);
+  }
   if (rc != CL_SUCCESS) {
     log_warn(std::string("clEnqueueNDRangeKernel failed on ") + d.name + " rc=" + std::to_string(rc));
-    clReleaseMemObject(job_buf);
-    clReleaseMemObject(res_buf);
     return found;
   }
-  rc = clFinish(static_cast<cl_command_queue>(d.queue));
+
+  ResultBlobHost result{};
+  rc = clEnqueueReadBuffer(q, res_mem, CL_TRUE, 0, sizeof(result), &result, 0, nullptr, nullptr);
   const auto t1 = std::chrono::steady_clock::now();
   if (rc != CL_SUCCESS) {
-    log_warn(std::string("clFinish failed on ") + d.name + " rc=" + std::to_string(rc));
+    log_warn("clEnqueueReadBuffer rc=" + std::to_string(rc));
+    return found;
   }
 
   const double sec = std::chrono::duration<double>(t1 - t0).count();
   d.total_hashes.fetch_add(count);
   if (sec > 1e-9) {
     const double mhs = (static_cast<double>(count) / sec) / 1e6;
-    // Light EMA so the status table is stable.
     const double prev = d.last_mhs.load();
     d.last_mhs.store(prev > 0.0 ? (prev * 0.6 + mhs * 0.4) : mhs);
-  }
-
-  rc = clEnqueueReadBuffer(static_cast<cl_command_queue>(d.queue), res_buf, CL_TRUE, 0,
-                           sizeof(result), &result, 0, nullptr, nullptr);
-  clReleaseMemObject(job_buf);
-  clReleaseMemObject(res_buf);
-  if (rc != CL_SUCCESS) {
-    log_warn("clEnqueueReadBuffer rc=" + std::to_string(rc));
-    return found;
   }
 
   if (result.found) {

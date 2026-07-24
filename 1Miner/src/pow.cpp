@@ -21,21 +21,20 @@ Hash256 target_from_difficulty(uint64_t difficulty) {
   out.fill(0xff);
   if (difficulty <= 1) return out;
 
-  // Divide 2^256 by difficulty into a 256-bit big-endian target.
-  // dividend limbs are little-endian 32-bit words; limb[8] = 1 means 2^256.
+  // Compute floor(2^256 / difficulty) as a 256-bit big-endian target.
+  // dividend is 2^256 represented with 9 little-endian 32-bit limbs (limb[8] = 1).
   uint32_t dividend[9] = {0, 0, 0, 0, 0, 0, 0, 0, 1};
-  uint32_t quotient[8] = {0};
+  uint32_t quotient[9] = {0};
   uint64_t remainder = 0;
   for (int i = 8; i >= 0; --i) {
     const unsigned __int128 cur =
         (static_cast<unsigned __int128>(remainder) << 32) | dividend[i];
     const uint64_t qdigit = static_cast<uint64_t>(cur / difficulty);
     remainder = static_cast<uint64_t>(cur % difficulty);
-    if (i >= 1) {
-      quotient[i - 1] = static_cast<uint32_t>(qdigit);
-    }
+    quotient[i] = static_cast<uint32_t>(qdigit);
   }
-
+  // quotient[8] is the 2^256 place and is 0 for difficulty > 1.
+  // quotient[7]..quotient[0] are the 256-bit result (little-endian limbs).
   for (int i = 0; i < 8; ++i) {
     const uint32_t limb = quotient[7 - i];
     out[i * 4 + 0] = static_cast<uint8_t>((limb >> 24) & 0xff);

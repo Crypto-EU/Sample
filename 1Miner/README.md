@@ -27,7 +27,7 @@ HiveOS-Archiv:
 
 ```bash
 1Miner/scripts/package-hive.sh
-# → 1Miner/releases/1miner-hive-1.0.5.tar.gz
+# → 1Miner/releases/1miner-hive-1.0.6.tar.gz
 ```
 
 ## Beispiele
@@ -43,7 +43,7 @@ HiveOS-Archiv:
 - **Miner:** Custom  
 - **Name:** `1miner-hive`  
 - **Installation URL:**  
-  `https://raw.githubusercontent.com/Crypto-EU/Sample/cursor/1miner-amd-hiveos-3705/1Miner/releases/1miner-hive-1.0.5.tar.gz`  
+  `https://raw.githubusercontent.com/Crypto-EU/Sample/cursor/1miner-amd-hiveos-3705/1Miner/releases/1miner-hive-1.0.6.tar.gz`  
 - **Pool URL:** z. B. `nl.rabbitminer.cc:1901`  
 - **Wallet template:** `%WAL%.%WORKER_NAME%`  
 - **Extra config:** leer lassen, oder z. B. `--device 0,1` / `--nonce-mode latehex`  

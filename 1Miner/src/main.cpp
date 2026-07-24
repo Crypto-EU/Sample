@@ -18,7 +18,7 @@ namespace {
 std::atomic<bool> g_stop{false};
 void on_signal(int) { g_stop = true; }
 
-constexpr const char* kVersion = "1.0.5";
+constexpr const char* kVersion = "1.0.6";
 }  // namespace
 
 static void usage(const char* argv0) {
@@ -186,19 +186,26 @@ int main(int argc, char** argv) {
   std::thread job_thread;
   if (rabbit) {
     job_thread = std::thread([&] {
+      int fail_streak = 0;
       while (!g_stop) {
         MiningJob job;
         std::string jerr;
         if (rabbit->get_job(job, jerr)) {
+          fail_streak = 0;
           install_job(job);
         } else {
-          log_warn("getjob failed: " + jerr + " — reconnecting");
-          if (!rabbit->connect_and_login(jerr)) {
-            log_error(jerr);
-            std::this_thread::sleep_for(std::chrono::seconds(3));
+          ++fail_streak;
+          log_warn("getjob failed: " + jerr +
+                   (fail_streak >= 2 ? " — reconnecting" : " — retrying"));
+          if (fail_streak >= 2) {
+            fail_streak = 0;
+            if (!rabbit->connect_and_login(jerr)) {
+              log_error(jerr);
+              std::this_thread::sleep_for(std::chrono::seconds(3));
+            }
           }
         }
-        std::this_thread::sleep_for(std::chrono::seconds(2));
+        std::this_thread::sleep_for(std::chrono::seconds(3));
       }
     });
   }

@@ -10,6 +10,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <sstream>
 #include <stdexcept>
@@ -202,6 +204,8 @@ bool RabbitPoolClient::recv_line(std::string& line, std::string& err, int timeou
   timeval tv{};
   tv.tv_sec = timeout_sec;
   setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(timeout_sec > 0 ? timeout_sec : 15);
   while (true) {
     auto pos = recv_buf_.find('\n');
     if (pos != std::string::npos) {
@@ -210,16 +214,32 @@ bool RabbitPoolClient::recv_line(std::string& line, std::string& err, int timeou
       recv_buf_.erase(0, pos + 1);
       return true;
     }
+    if (std::chrono::steady_clock::now() > deadline) {
+      err = ssl_ ? "TLS read timeout/failed" : "TCP read timeout/failed";
+      return false;
+    }
     char buf[4096];
     int n = 0;
     if (ssl_) {
       n = SSL_read(static_cast<SSL*>(ssl_), buf, sizeof(buf));
+      if (n <= 0) {
+        const int serr = SSL_get_error(static_cast<SSL*>(ssl_), n);
+        if (serr == SSL_ERROR_WANT_READ || serr == SSL_ERROR_WANT_WRITE ||
+            serr == SSL_ERROR_SYSCALL) {
+          // Socket timeout or transient; keep waiting until deadline.
+          continue;
+        }
+        err = "TLS read timeout/failed";
+        return false;
+      }
     } else {
       n = static_cast<int>(::recv(fd_, buf, sizeof(buf), 0));
-    }
-    if (n <= 0) {
-      err = ssl_ ? "TLS read timeout/failed" : "TCP read timeout/failed";
-      return false;
+      if (n <= 0) {
+        // EAGAIN/EWOULDBLOCK from SO_RCVTIMEO — retry until deadline.
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) continue;
+        err = "TCP read timeout/failed";
+        return false;
+      }
     }
     recv_buf_.append(buf, buf + n);
   }
@@ -268,7 +288,7 @@ bool RabbitPoolClient::get_job(MiningJob& job, std::string& err) {
   std::lock_guard<std::mutex> lock(mu_);
   if (!send_line("{\"id\":2,\"method\":\"getjob\",\"params\":[]}", err)) return false;
   std::string resp;
-  if (!recv_line(resp, err, 20)) return false;
+  if (!recv_line(resp, err, 45)) return false;
   if (resp.find("\"ok\":true") == std::string::npos) {
     err = "getjob failed: " + resp;
     return false;
@@ -306,7 +326,7 @@ bool RabbitPoolClient::submit(const MiningJob& job, const ShareCandidate& share,
       << "\"blockhash\":\"" << json_escape(share.blockhash_hex) << "\"}}";
   if (!send_line(req.str(), err)) return false;
   std::string resp;
-  if (!recv_line(resp, err, 20)) return false;
+  if (!recv_line(resp, err, 30)) return false;
   if (resp.find("\"ok\":true") != std::string::npos ||
       resp.find("\"result\":true") != std::string::npos) {
     return true;

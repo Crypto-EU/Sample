@@ -70,6 +70,8 @@ static inline void counter_to_hex_words(ulong ctr, uint* o0, uint* o1, uint* o2,
   *o3 = (bytes[6]<<16) | bytes[7];
 }
 
+// AMD OpenCL is strict about address spaces: do not pass __constant pointers into
+// parameters that default to __private. Callers must copy into private arrays first.
 static inline int hash_le_target(const uint h[8], const uint t[8]) {
   #pragma unroll
   for (int i=0;i<8;++i) {
@@ -82,13 +84,28 @@ static inline int hash_le_target(const uint h[8], const uint t[8]) {
 __kernel void mine_classic(__constant const JobBlob* job, __global ResultBlob* result) {
   ulong gid = (ulong)get_global_id(0);
   ulong stride = (ulong)get_global_size(0);
-  for (ulong i = gid; i < job->count; i += stride) {
+
+  // Snapshot constant job fields into private memory once per work-item.
+  uint midstate[8];
+  uint target[8];
+  uint prefix_tail[16];
+  ulong start_counter = job->start_counter;
+  ulong count = job->count;
+  #pragma unroll
+  for (int k=0;k<8;++k) {
+    midstate[k] = job->midstate[k];
+    target[k] = job->target[k];
+  }
+  #pragma unroll
+  for (int k=0;k<16;++k) prefix_tail[k] = job->prefix_tail[k];
+
+  for (ulong i = gid; i < count; i += stride) {
     if (result->found) return;
-    ulong ctr = job->start_counter + i;
+    ulong ctr = start_counter + i;
 
     uint state[8];
     #pragma unroll
-    for (int k=0;k<8;++k) state[k]=job->midstate[k];
+    for (int k=0;k<8;++k) state[k]=midstate[k];
 
     // Build final blocks for remaining 14 prefix bytes + 16 nonce bytes = 30 bytes, then padding.
     // prefix_tail_len is 14; nonce adds 16 => 30 bytes of data after midstate.
@@ -103,7 +120,7 @@ __kernel void mine_classic(__constant const JobBlob* job, __global ResultBlob* r
     for (int k=0;k<64;++k) tail[k]=0;
     #pragma unroll
     for (int k=0;k<14;++k) {
-      uint word = job->prefix_tail[k>>2];
+      uint word = prefix_tail[k>>2];
       uint sh = 24u - ((uint)(k & 3) * 8u);
       tail[k] = (uchar)((word >> sh) & 255u);
     }
@@ -134,7 +151,7 @@ __kernel void mine_classic(__constant const JobBlob* job, __global ResultBlob* r
     }
     sha256_compress(state, w);
 
-    if (hash_le_target(state, job->target)) {
+    if (hash_le_target(state, target)) {
       if (atomic_cmpxchg(&result->found, 0u, 1u) == 0u) {
         result->counter = ctr;
         #pragma unroll

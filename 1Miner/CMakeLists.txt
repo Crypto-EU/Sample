@@ -25,6 +25,9 @@ add_executable(1miner ${ONE_MINER_SOURCES})
 target_include_directories(1miner PRIVATE src)
 target_link_libraries(1miner PRIVATE OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
 
+add_executable(pow_selftest tools/pow_selftest.cpp src/sha256.cpp src/pow.cpp)
+target_include_directories(pow_selftest PRIVATE src)
+
 if(ONE_MINER_ENABLE_OPENCL)
   find_package(OpenCL)
   if(OpenCL_FOUND)

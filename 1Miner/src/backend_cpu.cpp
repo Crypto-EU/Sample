@@ -1,7 +1,6 @@
 #include "backend.hpp"
 
-#include "util.hpp"
-
+#include <algorithm>
 #include <chrono>
 #include <thread>
 
@@ -15,32 +14,42 @@ void CpuBackend::set_job(const PreparedJob& job) { job_ = job; }
 
 std::vector<ShareCandidate> CpuBackend::scan(uint64_t start, uint64_t count, int device_index,
                                              std::atomic<bool>& stop_flag) {
+  return scan(start, count, device_index, job_, stop_flag);
+}
+
+std::vector<ShareCandidate> CpuBackend::scan(uint64_t start, uint64_t count, int device_index,
+                                             const PreparedJob& job,
+                                             std::atomic<bool>& stop_flag) {
   std::vector<ShareCandidate> found;
   const auto t0 = std::chrono::steady_clock::now();
   uint64_t local_hashes = 0;
 
+  auto emit = [&](uint64_t c, std::vector<ShareCandidate>& dst) {
+    Hash256 h{};
+    bool ok = false;
+    std::string nonce;
+    if (job.mode == NonceMode::Latehex) {
+      nonce = format_latehex_nonce(0, c);
+      ok = mine_hash_latehex(job, nonce, h);
+    } else {
+      nonce = format_classic_nonce(c);
+      ok = mine_hash_classic(job, c, h);
+    }
+    if (ok) {
+      ShareCandidate s;
+      s.nonce_hex = nonce;
+      s.hash = h;
+      s.blockhash_hex = make_share_blockhash(job, nonce, h);
+      s.timestamp_us = job.timestamp_us;
+      s.gpu_index = device_index;
+      dst.push_back(s);
+    }
+  };
+
   auto worker = [&](uint64_t from, uint64_t to) {
     for (uint64_t c = from; c < to && !stop_flag.load(); ++c) {
-      Hash256 h{};
-      bool ok = false;
-      std::string nonce;
-      if (job_.mode == NonceMode::Latehex) {
-        nonce = format_latehex_nonce(0, c);
-        ok = mine_hash_latehex(job_, nonce, h);
-      } else {
-        nonce = format_classic_nonce(c);
-        ok = mine_hash_classic(job_, c, h);
-      }
       ++local_hashes;
-      if (ok) {
-        ShareCandidate s;
-        s.nonce_hex = nonce;
-        s.hash = h;
-        s.blockhash_hex = hash_to_hex(h);
-        s.timestamp_us = now_us();
-        s.gpu_index = device_index;
-        found.push_back(s);
-      }
+      emit(c, found);
     }
   };
 
@@ -55,25 +64,7 @@ std::vector<ShareCandidate> CpuBackend::scan(uint64_t start, uint64_t count, int
       const uint64_t to = std::min(start + count, from + chunk);
       pool.emplace_back([&, t, from, to] {
         for (uint64_t c = from; c < to && !stop_flag.load(); ++c) {
-          Hash256 h{};
-          bool ok = false;
-          std::string nonce;
-          if (job_.mode == NonceMode::Latehex) {
-            nonce = format_latehex_nonce(0, c);
-            ok = mine_hash_latehex(job_, nonce, h);
-          } else {
-            nonce = format_classic_nonce(c);
-            ok = mine_hash_classic(job_, c, h);
-          }
-          if (ok) {
-            ShareCandidate s;
-            s.nonce_hex = nonce;
-            s.hash = h;
-            s.blockhash_hex = hash_to_hex(h);
-            s.timestamp_us = now_us();
-            s.gpu_index = device_index;
-            parts[static_cast<size_t>(t)].push_back(s);
-          }
+          emit(c, parts[static_cast<size_t>(t)]);
         }
       });
     }

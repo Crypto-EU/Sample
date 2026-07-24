@@ -10,7 +10,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
-#include <mutex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -268,11 +267,6 @@ std::string OpenClBackend::device_name(int i) const {
   return devices_[static_cast<size_t>(i)]->name;
 }
 
-void OpenClBackend::set_job(const PreparedJob& job) {
-  std::lock_guard<std::mutex> lock(job_mu_);
-  job_ = job;
-}
-
 double OpenClBackend::last_mhs(int device_index) const {
   if (device_index < 0 || device_index >= device_count()) return 0;
   return devices_[static_cast<size_t>(device_index)]->last_mhs.load();
@@ -284,15 +278,11 @@ uint64_t OpenClBackend::total_hashes(int device_index) const {
 }
 
 std::vector<ShareCandidate> OpenClBackend::scan(int device_index, uint64_t start, uint64_t count,
+                                                const PreparedJob& job,
                                                 std::atomic<bool>& stop_flag) {
   std::vector<ShareCandidate> found;
   if (device_index < 0 || device_index >= device_count() || stop_flag.load()) return found;
 
-  PreparedJob job;
-  {
-    std::lock_guard<std::mutex> lock(job_mu_);
-    job = job_;
-  }
   if (job.mode != NonceMode::Classic) {
     return found;
   }
@@ -409,16 +399,15 @@ std::vector<ShareCandidate> OpenClBackend::scan(int device_index, uint64_t start
       s.hash[i * 4 + 2] = static_cast<uint8_t>((result.hash[i] >> 8) & 0xff);
       s.hash[i * 4 + 3] = static_cast<uint8_t>(result.hash[i] & 0xff);
     }
-    s.blockhash_hex = hash_to_hex(s.hash);
-    s.timestamp_us = now_us();
+    s.timestamp_us = job.timestamp_us;
     s.gpu_index = device_index;
     Hash256 verify{};
     const bool cpu_ok = mine_hash_classic(job, result.counter, verify);
     if (cpu_ok || hash_meets_target(s.hash, job.target)) {
       if (hash_meets_target(verify, job.target)) {
         s.hash = verify;
-        s.blockhash_hex = hash_to_hex(verify);
       }
+      s.blockhash_hex = make_share_blockhash(job, s.nonce_hex, s.hash);
       found.push_back(s);
     } else {
       log_warn("OpenCL share failed CPU verify nonce=" + s.nonce_hex);

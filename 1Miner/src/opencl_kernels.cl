@@ -1,5 +1,5 @@
-// Clean-room OpenCL SHA256 classic midstate miner for 1Miner.
-// Message layout (ASCII hex): previous_blockhash(78) + digest(64) + nonce(16) = 158 bytes.
+// Clean-room OpenCL SHA256 classic midstate miner for 1Miner (hasher 5.2 layout).
+// Message layout (ASCII hex): previous_blockhash(78) + header_hash(64) + nonce(16) = 158 bytes.
 // Threads search a uint64 counter space encoded as 16 lowercase hex chars.
 //
 // Layout note: ulong fields must be 8-byte aligned. Keep an explicit pad after target[]

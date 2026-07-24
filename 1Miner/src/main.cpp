@@ -8,6 +8,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -18,7 +19,7 @@ namespace {
 std::atomic<bool> g_stop{false};
 void on_signal(int) { g_stop = true; }
 
-constexpr const char* kVersion = "1.0.6";
+constexpr const char* kVersion = "1.0.7";
 }  // namespace
 
 static void usage(const char* argv0) {
@@ -110,7 +111,7 @@ int main(int argc, char** argv) {
   std::signal(SIGINT, on_signal);
   std::signal(SIGTERM, on_signal);
 
-  log_info(std::string("1Miner v") + kVersion + " AMD-only OpenCL, nonce_mode=" +
+  log_info(std::string("1Miner v") + kVersion + " AMD-only OpenCL (hasher 5.2 PoW), nonce_mode=" +
            nonce_mode_name(mode));
 
 #ifndef ONE_MINER_HAS_OPENCL
@@ -130,30 +131,43 @@ int main(int argc, char** argv) {
 #endif
 
   std::mutex job_mu;
-  PreparedJob prepared{};
+  MiningJob current_job{};
   std::atomic<bool> has_job{false};
   std::atomic<uint64_t> counter{static_cast<uint64_t>(now_us())};
+  // hasher-style pool clock: pool_now = local_now + offset
+  std::atomic<int64_t> time_offset_us{0};
   MinerStats stats{};
   stats.version = kVersion;
   stats.nonce_mode = nonce_mode_name(mode);
   const auto started = std::chrono::steady_clock::now();
 
+  auto pool_now_us = [&]() -> int64_t { return now_us() + time_offset_us.load(); };
+
+  auto learn_offset_from_error = [&](const std::string& serr) {
+    const auto pos = serr.find("now=");
+    if (pos == std::string::npos) return;
+    try {
+      const int64_t pool_now = std::stoll(serr.substr(pos + 4));
+      time_offset_us = pool_now - now_us();
+      log_info("pool timestamp sync offset_us=" + std::to_string(time_offset_us.load()));
+    } catch (...) {
+    }
+  };
+
   auto install_job = [&](const MiningJob& job) {
-    PreparedJob prep;
-    std::string perr;
-    if (!prepare_job(job, mode, prep, perr)) {
-      log_error("prepare_job: " + perr);
-      return;
+    // Sync miner clock to pool worktime when present (hasher timestamp sync).
+    if (job.worktime > 0) {
+      time_offset_us = job.worktime - now_us();
     }
     {
       std::lock_guard<std::mutex> lock(job_mu);
-      prepared = prep;
+      current_job = job;
       has_job = true;
     }
-    ocl->set_job(prep);
     log_info("New Job: " + job.previous_blockhash.substr(0, 12) +
              " height=" + std::to_string(job.height) +
-             " share_diff=" + std::to_string(job.share_difficulty));
+             " share_diff=" + std::to_string(job.share_difficulty) +
+             " worktime=" + std::to_string(job.worktime));
   };
 
   std::unique_ptr<RabbitPoolClient> rabbit;
@@ -170,6 +184,18 @@ int main(int argc, char** argv) {
     submit_fn = [&](const MiningJob& j, const ShareCandidate& s, std::string& e) {
       return rabbit->submit(j, s, e);
     };
+    // hasher-style: learn pool clock when worktime is absent from getjob
+    {
+      MiningJob probe;
+      probe.job_id = "clock-sync";
+      ShareCandidate s;
+      s.nonce_hex = "0000000000000000";
+      s.timestamp_us = 1;
+      s.blockhash_hex = std::string(78, '0');
+      std::string serr;
+      submit_fn(probe, s, serr);
+      learn_offset_from_error(serr);
+    }
   } else {
     auto urls = split(nats_list, ',');
     nats = std::make_unique<NatsPoolClient>(urls, worker, wallet);
@@ -202,6 +228,16 @@ int main(int argc, char** argv) {
             if (!rabbit->connect_and_login(jerr)) {
               log_error(jerr);
               std::this_thread::sleep_for(std::chrono::seconds(3));
+            } else {
+              MiningJob probe;
+              probe.job_id = "clock-sync";
+              ShareCandidate s;
+              s.nonce_hex = "0000000000000000";
+              s.timestamp_us = 1;
+              s.blockhash_hex = std::string(78, '0');
+              std::string serr;
+              rabbit->submit(probe, s, serr);
+              learn_offset_from_error(serr);
             }
           }
         }
@@ -210,16 +246,17 @@ int main(int argc, char** argv) {
     });
   }
 
-  auto handle_shares = [&](const std::vector<ShareCandidate>& shares, PreparedJob prep_snapshot) {
+  auto handle_shares = [&](const std::vector<ShareCandidate>& shares, const PreparedJob& prep) {
     for (const auto& s : shares) {
       std::string serr;
-      if (submit_fn(prep_snapshot.job, s, serr)) {
+      if (submit_fn(prep.job, s, serr)) {
         ++stats.accepted;
-        log_info("share accepted nonce=" + s.nonce_hex.substr(0, 16) +
-                 " hash=" + s.blockhash_hex.substr(0, 16));
+        log_info("share accepted nonce=" + s.nonce_hex +
+                 " blockhash=" + s.blockhash_hex.substr(0, 16));
       } else {
         ++stats.rejected;
         log_warn("share rejected: " + serr);
+        learn_offset_from_error(serr);
       }
     }
   };
@@ -258,6 +295,7 @@ int main(int argc, char** argv) {
   log_info("mining loop start (AMD GPUs=" + std::to_string(ocl->device_count()) + ")");
 
   // One worker thread per GPU so cards mine in parallel with distinct nonce ranges.
+  // Each batch rebuilds header_hash midstate with a fresh pool-synced timestamp (hasher 5.2).
   std::mutex share_mu;
   std::vector<std::thread> miners;
   auto device_enabled = [&](int i) {
@@ -269,19 +307,31 @@ int main(int argc, char** argv) {
   for (int i = 0; i < ocl->device_count(); ++i) {
     if (!device_enabled(i)) continue;
     miners.emplace_back([&, i] {
-      const uint64_t batch = 1ull << 22;  // 4M hashes per kernel launch
+      const uint64_t batch = 1ull << 20;  // 1M hashes — keep timestamp fresh within pool 5s window
       while (!g_stop) {
         if (!has_job.load()) {
           std::this_thread::sleep_for(std::chrono::milliseconds(100));
           continue;
         }
-        PreparedJob prep;
+        MiningJob job;
         {
           std::lock_guard<std::mutex> lock(job_mu);
-          prep = prepared;
+          job = current_job;
+        }
+        if (job.previous_blockhash.size() != 78) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          continue;
+        }
+        const int64_t ts = pool_now_us();
+        PreparedJob prep;
+        std::string perr;
+        if (!prepare_job(job, mode, ts, prep, perr)) {
+          log_warn("prepare_job: " + perr);
+          std::this_thread::sleep_for(std::chrono::milliseconds(200));
+          continue;
         }
         const uint64_t start = counter.fetch_add(batch);
-        auto shares = ocl->scan(i, start, batch, g_stop);
+        auto shares = ocl->scan(i, start, batch, prep, g_stop);
         if (!shares.empty()) {
           std::lock_guard<std::mutex> lock(share_mu);
           handle_shares(shares, prep);

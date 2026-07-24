@@ -41,6 +41,8 @@ class CpuBackend {
   // Scan a counter range; returns found shares.
   std::vector<ShareCandidate> scan(uint64_t start, uint64_t count, int device_index,
                                    std::atomic<bool>& stop_flag);
+  std::vector<ShareCandidate> scan(uint64_t start, uint64_t count, int device_index,
+                                   const PreparedJob& job, std::atomic<bool>& stop_flag);
 
   double last_mhs() const { return last_mhs_; }
   uint64_t hashes() const { return hashes_; }
@@ -62,9 +64,9 @@ class OpenClBackend {
   bool init(std::string& err);
   int device_count() const { return static_cast<int>(devices_.size()); }
   std::string device_name(int i) const;
-  void set_job(const PreparedJob& job);
+  // Mine with an explicit prepared job (hasher: midstate tied to submit timestamp).
   std::vector<ShareCandidate> scan(int device_index, uint64_t start, uint64_t count,
-                                   std::atomic<bool>& stop_flag);
+                                   const PreparedJob& job, std::atomic<bool>& stop_flag);
   double last_mhs(int device_index) const;
   uint64_t total_hashes(int device_index) const;
 
@@ -82,8 +84,6 @@ class OpenClBackend {
     std::atomic<uint64_t> total_hashes{0};
   };
   std::vector<std::unique_ptr<Dev>> devices_;
-  PreparedJob job_{};
-  mutable std::mutex job_mu_;
   std::string kernel_source_;
 };
 #endif

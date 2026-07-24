@@ -261,7 +261,8 @@ bool RabbitPoolClient::connect_and_login(std::string& err) {
     }
     std::ostringstream req;
     req << "{\"id\":1,\"method\":\"login\",\"params\":[\""
-        << json_escape(wallet_) << "\",\"x\",\"" << json_escape(worker_) << "\"]}";
+        << json_escape(wallet_) << "\",\"x\",\"" << json_escape(worker_)
+        << "\"],\"latehex\":false}";
     if (!send_line(req.str(), err)) {
       log_warn(err);
       continue;
@@ -286,7 +287,7 @@ bool RabbitPoolClient::connect_and_login(std::string& err) {
 
 bool RabbitPoolClient::get_job(MiningJob& job, std::string& err) {
   std::lock_guard<std::mutex> lock(mu_);
-  if (!send_line("{\"id\":2,\"method\":\"getjob\",\"params\":[]}", err)) return false;
+  if (!send_line("{\"id\":2,\"method\":\"getjob\",\"params\":[],\"latehex\":false}", err)) return false;
   std::string resp;
   if (!recv_line(resp, err, 45)) return false;
   if (resp.find("\"ok\":true") == std::string::npos) {
@@ -311,6 +312,13 @@ bool RabbitPoolClient::get_job(MiningJob& job, std::string& err) {
   if (json_get_number(resp, "difficulty", v) && j.share_difficulty == 0) {
     j.share_difficulty = static_cast<uint64_t>(v);
   }
+  if (json_get_number(resp, "worktime", v) || json_get_number(resp, "work_time", v) ||
+      json_get_number(resp, "workTime", v)) {
+    j.worktime = v;
+  }
+  if (json_get_number(resp, "timestamp", v) && j.worktime == 0) j.worktime = v;
+  // receipts array — leave empty when absent (hasher sha256(""))
+  j.receipts.clear();
   if (j.job_id.empty()) j.job_id = j.previous_blockhash;
   job = std::move(j);
   return true;
@@ -318,12 +326,13 @@ bool RabbitPoolClient::get_job(MiningJob& job, std::string& err) {
 
 bool RabbitPoolClient::submit(const MiningJob& job, const ShareCandidate& share, std::string& err) {
   std::lock_guard<std::mutex> lock(mu_);
+  // hasher / RabbitMiner: params MUST be a JSON array — objects parse as "invalid json".
+  // Order: [job_id, nonce, timestamp, blockhash]
   std::ostringstream req;
-  req << "{\"id\":3,\"method\":\"submit\",\"params\":{"
-      << "\"job_id\":\"" << json_escape(job.job_id) << "\","
-      << "\"nonce\":\"" << json_escape(share.nonce_hex) << "\","
-      << "\"timestamp\":" << share.timestamp_us << ","
-      << "\"blockhash\":\"" << json_escape(share.blockhash_hex) << "\"}}";
+  req << "{\"id\":3,\"method\":\"submit\",\"params\":[\""
+      << json_escape(job.job_id) << "\",\"" << json_escape(share.nonce_hex) << "\","
+      << share.timestamp_us << ",\"" << json_escape(share.blockhash_hex)
+      << "\"],\"latehex\":false}";
   if (!send_line(req.str(), err)) return false;
   std::string resp;
   if (!recv_line(resp, err, 30)) return false;

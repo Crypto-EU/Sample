@@ -1,6 +1,9 @@
 // Clean-room OpenCL SHA256 classic midstate miner for 1Miner.
 // Message layout (ASCII hex): previous_blockhash(78) + digest(64) + nonce(16) = 158 bytes.
 // Threads search a uint64 counter space encoded as 16 lowercase hex chars.
+//
+// Layout note: ulong fields must be 8-byte aligned. Keep an explicit pad after target[]
+// so host (C++) and device (OpenCL) JobBlob layouts match.
 
 __constant uint K256[64] = {
     0x428a2f98u,0x71374491u,0xb5c0fbcfu,0xe9b5dba5u,0x3956c25bu,0x59f111f1u,0x923f82a4u,0xab1c5ed5u,
@@ -23,15 +26,17 @@ __constant uint K256[64] = {
 
 typedef struct {
   uint midstate[8];
-  uint prefix_tail[16]; // remaining prefix bytes packed into BE words (up to 64 bytes of zero-pad unused)
-  uint prefix_tail_len; // 0..63  (142 % 64 = 14)
+  uint prefix_tail[16]; // remaining prefix bytes packed into BE words
+  uint prefix_tail_len; // 14
   uint target[8];       // big-endian words
+  uint _pad_align8;     // pad so ulongs are 8-byte aligned (matches host)
   ulong start_counter;
   ulong count;
 } JobBlob;
 
 typedef struct {
   volatile uint found;
+  uint _pad_align8;
   ulong counter;
   uint hash[8];
 } ResultBlob;
@@ -63,14 +68,13 @@ static inline void counter_to_hex_words(ulong ctr, uint* o0, uint* o1, uint* o2,
     uint b = (uint)((ctr >> shift) & 255u);
     bytes[i] = (hex_nibble((b>>4)&15u)<<8) | hex_nibble(b&15u);
   }
-  // pack 2 hex-bytes (4 ASCII) per word... actually each bytes[i] is 2 ASCII chars in low 16 bits.
   *o0 = (bytes[0]<<16) | bytes[1];
   *o1 = (bytes[2]<<16) | bytes[3];
   *o2 = (bytes[4]<<16) | bytes[5];
   *o3 = (bytes[6]<<16) | bytes[7];
 }
 
-// AMD OpenCL is strict about address spaces: do not pass __constant pointers into
+// AMD OpenCL is strict about address spaces: do not pass __constant/__global pointers into
 // parameters that default to __private. Callers must copy into private arrays first.
 static inline int hash_le_target(const uint h[8], const uint t[8]) {
   #pragma unroll
@@ -81,11 +85,11 @@ static inline int hash_le_target(const uint h[8], const uint t[8]) {
   return 1;
 }
 
-__kernel void mine_classic(__constant const JobBlob* job, __global ResultBlob* result) {
+__kernel void mine_classic(__global const JobBlob* job, __global ResultBlob* result) {
   ulong gid = (ulong)get_global_id(0);
   ulong stride = (ulong)get_global_size(0);
 
-  // Snapshot constant job fields into private memory once per work-item.
+  // Snapshot job fields into private memory once per work-item.
   uint midstate[8];
   uint target[8];
   uint prefix_tail[16];
@@ -107,14 +111,11 @@ __kernel void mine_classic(__constant const JobBlob* job, __global ResultBlob* r
     #pragma unroll
     for (int k=0;k<8;++k) state[k]=midstate[k];
 
-    // Build final blocks for remaining 14 prefix bytes + 16 nonce bytes = 30 bytes, then padding.
-    // prefix_tail_len is 14; nonce adds 16 => 30 bytes of data after midstate.
+    // Build final block: remaining 14 prefix bytes + 16 nonce bytes = 30, then padding.
     uint w[16];
     #pragma unroll
     for (int k=0;k<16;++k) w[k]=0;
 
-    // Copy 14 prefix bytes from packed BE words in prefix_tail.
-    // prefix_tail words store the remaining ASCII bytes packed big-endian in the first 14 bytes.
     uchar tail[64];
     #pragma unroll
     for (int k=0;k<64;++k) tail[k]=0;
@@ -124,7 +125,6 @@ __kernel void mine_classic(__constant const JobBlob* job, __global ResultBlob* r
       uint sh = 24u - ((uint)(k & 3) * 8u);
       tail[k] = (uchar)((word >> sh) & 255u);
     }
-    // Append 16 hex ASCII nonce chars
     uint n0,n1,n2,n3;
     counter_to_hex_words(ctr, &n0,&n1,&n2,&n3);
     uchar nonce_ascii[16];

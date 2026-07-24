@@ -3,6 +3,8 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -64,6 +66,7 @@ class OpenClBackend {
   std::vector<ShareCandidate> scan(int device_index, uint64_t start, uint64_t count,
                                    std::atomic<bool>& stop_flag);
   double last_mhs(int device_index) const;
+  uint64_t total_hashes(int device_index) const;
 
  private:
   struct Dev {
@@ -73,10 +76,14 @@ class OpenClBackend {
     void* program = nullptr;
     void* kernel = nullptr;
     std::string name;
-    double last_mhs = 0;
+    size_t max_work_group = 256;
+    unsigned compute_units = 1;
+    std::atomic<double> last_mhs{0};
+    std::atomic<uint64_t> total_hashes{0};
   };
-  std::vector<Dev> devices_;
+  std::vector<std::unique_ptr<Dev>> devices_;
   PreparedJob job_{};
+  mutable std::mutex job_mu_;
   std::string kernel_source_;
 };
 #endif

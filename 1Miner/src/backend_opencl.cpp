@@ -6,8 +6,11 @@
 
 #include <cctype>
 #include <chrono>
+#include <cstddef>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -34,7 +37,7 @@ std::string load_kernel_source() {
       "src/opencl_kernels.cl",
       "/usr/local/share/1miner/opencl_kernels.cl",
   };
-  #if defined(__linux__)
+#if defined(__linux__)
   char exe[4096] = {0};
   const ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
   if (n > 0) {
@@ -56,26 +59,29 @@ std::string load_kernel_source() {
   return {};
 }
 
-std::string cl_err(cl_int e) { return "OpenCL error " + std::to_string(e); }
-
 }  // namespace
 
-#pragma pack(push, 1)
+// Must match opencl_kernels.cl JobBlob / ResultBlob exactly (natural C alignment).
 struct JobBlobHost {
   uint32_t midstate[8];
   uint32_t prefix_tail[16];
   uint32_t prefix_tail_len;
   uint32_t target[8];
+  uint32_t _pad_align8;
   uint64_t start_counter;
   uint64_t count;
 };
 struct ResultBlobHost {
   uint32_t found;
-  uint32_t _pad;
+  uint32_t _pad_align8;
   uint64_t counter;
   uint32_t hash[8];
 };
-#pragma pack(pop)
+
+static_assert(sizeof(JobBlobHost) == 152, "JobBlobHost must match OpenCL JobBlob (152 bytes)");
+static_assert(offsetof(JobBlobHost, start_counter) == 136, "start_counter offset mismatch");
+static_assert(offsetof(JobBlobHost, count) == 144, "count offset mismatch");
+static_assert(sizeof(ResultBlobHost) == 48, "ResultBlobHost must match OpenCL ResultBlob");
 
 OpenClBackend::OpenClBackend() = default;
 
@@ -102,7 +108,6 @@ bool OpenClBackend::init(std::string& err) {
   auto is_intel = [&](const std::string& a, const std::string& b) {
     return contains_any(a, {"intel"}) || contains_any(b, {"intel", "uhd graphics", "iris"});
   };
-  // Broad AMD match used by HiveOS / ROCm / AMDGPU-PRO / Mesa.
   auto is_amdish = [&](const std::string& vendor_l, const std::string& name_l, const std::string& plat_l) {
     if (contains_any(vendor_l, {"advanced micro devices", "amd", "ati"})) return true;
     if (contains_any(name_l, {"radeon", "amd ", "gfx", "ellesmere", "polaris", "vega", "navi",
@@ -110,7 +115,6 @@ bool OpenClBackend::init(std::string& err) {
                               "tonga", "pitcairn", "bonaire", "algol"}))
       return true;
     if (contains_any(plat_l, {"advanced micro devices", "amd accelerated", "amd ", "rocm"})) return true;
-    // Mesa/rusticl/clover often expose AMD cards with vendor=Mesa.
     if (contains_any(vendor_l, {"mesa"}) &&
         contains_any(name_l, {"amd", "radeon", "gfx", "llvm"}))
       return true;
@@ -145,7 +149,6 @@ bool OpenClBackend::init(std::string& err) {
       continue;
     }
 
-    // Prefer GPUs; if none, also probe ALL (some ICDs mis-type devices).
     cl_device_type type = CL_DEVICE_TYPE_GPU;
     cl_uint ndev = 0;
     rc = clGetDeviceIDs(plat, type, 0, nullptr, &ndev);
@@ -186,8 +189,6 @@ bool OpenClBackend::init(std::string& err) {
         continue;
       }
       if (!is_amdish(vendor_l, name_l, plat_l)) {
-        // Last resort on AMD-only HiveOS farms: accept unknown GPU on non-NVIDIA/non-Intel platform.
-        // Still reject if name clearly looks like CPU/OpenCL CPU device.
         if (contains_any(name_l, {"cpu", "pthread", "host"})) {
           log_info("  skip CPU-like device");
           continue;
@@ -235,15 +236,24 @@ bool OpenClBackend::init(std::string& err) {
         clReleaseContext(ctx);
         continue;
       }
-      Dev d;
-      d.device_id = dev;
-      d.context = ctx;
-      d.queue = q;
-      d.program = prog;
-      d.kernel = ker;
-      d.name = name;
-      devices_.push_back(d);
-      log_info(std::string("AMD OpenCL GPU ready: ") + name);
+
+      size_t max_wg = 256;
+      clGetKernelWorkGroupInfo(ker, dev, CL_KERNEL_WORK_GROUP_SIZE, sizeof(max_wg), &max_wg, nullptr);
+      cl_uint cu = 0;
+      clGetDeviceInfo(dev, CL_DEVICE_MAX_COMPUTE_UNITS, sizeof(cu), &cu, nullptr);
+
+      auto d = std::make_unique<Dev>();
+      d->device_id = dev;
+      d->context = ctx;
+      d->queue = q;
+      d->program = prog;
+      d->kernel = ker;
+      d->name = name;
+      d->max_work_group = max_wg ? max_wg : 256;
+      d->compute_units = cu ? cu : 1;
+      devices_.push_back(std::move(d));
+      log_info(std::string("AMD OpenCL GPU ready: ") + name + " cu=" + std::to_string(cu) +
+               " max_wg=" + std::to_string(max_wg));
     }
   }
   if (devices_.empty()) {
@@ -255,34 +265,52 @@ bool OpenClBackend::init(std::string& err) {
 
 std::string OpenClBackend::device_name(int i) const {
   if (i < 0 || i >= device_count()) return {};
-  return devices_[static_cast<size_t>(i)].name;
+  return devices_[static_cast<size_t>(i)]->name;
 }
 
-void OpenClBackend::set_job(const PreparedJob& job) { job_ = job; }
+void OpenClBackend::set_job(const PreparedJob& job) {
+  std::lock_guard<std::mutex> lock(job_mu_);
+  job_ = job;
+}
 
 double OpenClBackend::last_mhs(int device_index) const {
   if (device_index < 0 || device_index >= device_count()) return 0;
-  return devices_[static_cast<size_t>(device_index)].last_mhs;
+  return devices_[static_cast<size_t>(device_index)]->last_mhs.load();
+}
+
+uint64_t OpenClBackend::total_hashes(int device_index) const {
+  if (device_index < 0 || device_index >= device_count()) return 0;
+  return devices_[static_cast<size_t>(device_index)]->total_hashes.load();
 }
 
 std::vector<ShareCandidate> OpenClBackend::scan(int device_index, uint64_t start, uint64_t count,
                                                 std::atomic<bool>& stop_flag) {
   std::vector<ShareCandidate> found;
   if (device_index < 0 || device_index >= device_count() || stop_flag.load()) return found;
-  if (job_.mode != NonceMode::Classic) {
-    // Latehex OpenCL path not yet specialized; fall back is handled by caller via CPU.
+
+  PreparedJob job;
+  {
+    std::lock_guard<std::mutex> lock(job_mu_);
+    job = job_;
+  }
+  if (job.mode != NonceMode::Classic) {
     return found;
   }
-  auto& d = devices_[static_cast<size_t>(device_index)];
+  if (count == 0) return found;
+
+  auto& d = *devices_[static_cast<size_t>(device_index)];
 
   JobBlobHost blob{};
-  for (int i = 0; i < 8; ++i) blob.midstate[i] = job_.midstate[i];
+  for (int i = 0; i < 8; ++i) blob.midstate[i] = job.midstate[i];
   for (int i = 0; i < 8; ++i) {
-    blob.target[i] = (uint32_t(job_.target[i * 4]) << 24) | (uint32_t(job_.target[i * 4 + 1]) << 16) |
-                     (uint32_t(job_.target[i * 4 + 2]) << 8) | uint32_t(job_.target[i * 4 + 3]);
+    blob.target[i] = (uint32_t(job.target[i * 4]) << 24) | (uint32_t(job.target[i * 4 + 1]) << 16) |
+                     (uint32_t(job.target[i * 4 + 2]) << 8) | uint32_t(job.target[i * 4 + 3]);
   }
-  // Remaining 14 ASCII bytes after 2 full SHA blocks of the 142-byte prefix.
-  const auto* p = reinterpret_cast<const uint8_t*>(job_.prefix_ascii.data());
+  if (job.prefix_ascii.size() < 142) {
+    log_warn("OpenCL scan: prefix too short");
+    return found;
+  }
+  const auto* p = reinterpret_cast<const uint8_t*>(job.prefix_ascii.data());
   const size_t rem_off = 128;
   uint8_t rem[64] = {0};
   for (size_t i = 0; i < 14; ++i) rem[i] = p[rem_off + i];
@@ -291,32 +319,86 @@ std::vector<ShareCandidate> OpenClBackend::scan(int device_index, uint64_t start
                           (uint32_t(rem[i * 4 + 2]) << 8) | uint32_t(rem[i * 4 + 3]);
   }
   blob.prefix_tail_len = 14;
+  blob._pad_align8 = 0;
   blob.start_counter = start;
   blob.count = count;
 
   ResultBlobHost result{};
   cl_int rc = CL_SUCCESS;
-  cl_mem job_buf = clCreateBuffer(static_cast<cl_context>(d.context), CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-                                  sizeof(blob), &blob, &rc);
-  cl_mem res_buf = clCreateBuffer(static_cast<cl_context>(d.context), CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
-                                  sizeof(result), &result, &rc);
+  cl_mem job_buf =
+      clCreateBuffer(static_cast<cl_context>(d.context), CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                     sizeof(blob), &blob, &rc);
+  if (rc != CL_SUCCESS || !job_buf) {
+    log_warn("clCreateBuffer(job) rc=" + std::to_string(rc));
+    return found;
+  }
+  cl_mem res_buf =
+      clCreateBuffer(static_cast<cl_context>(d.context), CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+                     sizeof(result), &result, &rc);
+  if (rc != CL_SUCCESS || !res_buf) {
+    log_warn("clCreateBuffer(result) rc=" + std::to_string(rc));
+    clReleaseMemObject(job_buf);
+    return found;
+  }
+
   cl_kernel ker = static_cast<cl_kernel>(d.kernel);
-  clSetKernelArg(ker, 0, sizeof(cl_mem), &job_buf);
-  clSetKernelArg(ker, 1, sizeof(cl_mem), &res_buf);
+  rc = clSetKernelArg(ker, 0, sizeof(cl_mem), &job_buf);
+  if (rc != CL_SUCCESS) {
+    log_warn("clSetKernelArg(0) rc=" + std::to_string(rc));
+    clReleaseMemObject(job_buf);
+    clReleaseMemObject(res_buf);
+    return found;
+  }
+  rc = clSetKernelArg(ker, 1, sizeof(cl_mem), &res_buf);
+  if (rc != CL_SUCCESS) {
+    log_warn("clSetKernelArg(1) rc=" + std::to_string(rc));
+    clReleaseMemObject(job_buf);
+    clReleaseMemObject(res_buf);
+    return found;
+  }
 
-  size_t global = 65536;
-  if (count < global) global = static_cast<size_t>(count);
+  // Prefer enough work-items for the GPU; each item strides through the batch.
+  size_t global = static_cast<size_t>(d.compute_units) * d.max_work_group * 8;
+  if (global < 65536) global = 65536;
+  if (global > static_cast<size_t>(count)) global = static_cast<size_t>(count);
   if (global == 0) global = 1;
-  const auto t0 = std::chrono::steady_clock::now();
-  rc = clEnqueueNDRangeKernel(static_cast<cl_command_queue>(d.queue), ker, 1, nullptr, &global, nullptr, 0, nullptr, nullptr);
-  clFinish(static_cast<cl_command_queue>(d.queue));
-  const auto t1 = std::chrono::steady_clock::now();
-  const double sec = std::chrono::duration<double>(t1 - t0).count();
-  if (sec > 0) d.last_mhs = (static_cast<double>(count) / sec) / 1e6;
+  // Round down to work-group multiple when possible.
+  if (d.max_work_group > 0 && global >= d.max_work_group) {
+    global = (global / d.max_work_group) * d.max_work_group;
+  }
 
-  clEnqueueReadBuffer(static_cast<cl_command_queue>(d.queue), res_buf, CL_TRUE, 0, sizeof(result), &result, 0, nullptr, nullptr);
+  const auto t0 = std::chrono::steady_clock::now();
+  rc = clEnqueueNDRangeKernel(static_cast<cl_command_queue>(d.queue), ker, 1, nullptr, &global,
+                              nullptr, 0, nullptr, nullptr);
+  if (rc != CL_SUCCESS) {
+    log_warn(std::string("clEnqueueNDRangeKernel failed on ") + d.name + " rc=" + std::to_string(rc));
+    clReleaseMemObject(job_buf);
+    clReleaseMemObject(res_buf);
+    return found;
+  }
+  rc = clFinish(static_cast<cl_command_queue>(d.queue));
+  const auto t1 = std::chrono::steady_clock::now();
+  if (rc != CL_SUCCESS) {
+    log_warn(std::string("clFinish failed on ") + d.name + " rc=" + std::to_string(rc));
+  }
+
+  const double sec = std::chrono::duration<double>(t1 - t0).count();
+  d.total_hashes.fetch_add(count);
+  if (sec > 1e-9) {
+    const double mhs = (static_cast<double>(count) / sec) / 1e6;
+    // Light EMA so the status table is stable.
+    const double prev = d.last_mhs.load();
+    d.last_mhs.store(prev > 0.0 ? (prev * 0.6 + mhs * 0.4) : mhs);
+  }
+
+  rc = clEnqueueReadBuffer(static_cast<cl_command_queue>(d.queue), res_buf, CL_TRUE, 0,
+                           sizeof(result), &result, 0, nullptr, nullptr);
   clReleaseMemObject(job_buf);
   clReleaseMemObject(res_buf);
+  if (rc != CL_SUCCESS) {
+    log_warn("clEnqueueReadBuffer rc=" + std::to_string(rc));
+    return found;
+  }
 
   if (result.found) {
     ShareCandidate s;
@@ -330,15 +412,16 @@ std::vector<ShareCandidate> OpenClBackend::scan(int device_index, uint64_t start
     s.blockhash_hex = hash_to_hex(s.hash);
     s.timestamp_us = now_us();
     s.gpu_index = device_index;
-    // Verify on CPU before submit.
     Hash256 verify{};
-    if (mine_hash_classic(job_, result.counter, verify) || hash_meets_target(s.hash, job_.target)) {
-      // Prefer CPU-verified hash.
-      if (hash_meets_target(verify, job_.target)) {
+    const bool cpu_ok = mine_hash_classic(job, result.counter, verify);
+    if (cpu_ok || hash_meets_target(s.hash, job.target)) {
+      if (hash_meets_target(verify, job.target)) {
         s.hash = verify;
         s.blockhash_hex = hash_to_hex(verify);
       }
       found.push_back(s);
+    } else {
+      log_warn("OpenCL share failed CPU verify nonce=" + s.nonce_hex);
     }
   }
   return found;

@@ -18,7 +18,7 @@ namespace {
 std::atomic<bool> g_stop{false};
 void on_signal(int) { g_stop = true; }
 
-constexpr const char* kVersion = "1.0.4";
+constexpr const char* kVersion = "1.0.5";
 }  // namespace
 
 static void usage(const char* argv0) {
@@ -236,6 +236,7 @@ int main(int argc, char** argv) {
         d.index = i;
         d.name = ocl->device_name(i);
         d.hashrate_mhs = ocl->last_mhs(i);
+        d.total_hashes = ocl->total_hashes(i);
         d.accepted = stats.accepted;
         d.rejected = stats.rejected;
         stats.devices.push_back(d);
@@ -248,30 +249,41 @@ int main(int argc, char** argv) {
   });
 
   log_info("mining loop start (AMD GPUs=" + std::to_string(ocl->device_count()) + ")");
-  while (!g_stop) {
-    if (!has_job.load()) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(200));
-      continue;
-    }
-    PreparedJob prep;
-    {
-      std::lock_guard<std::mutex> lock(job_mu);
-      prep = prepared;
-    }
 
-    const uint64_t batch = 1ull << 20;
-    const uint64_t start = counter.fetch_add(batch);
-
-    for (int i = 0; i < ocl->device_count() && !g_stop; ++i) {
-      if (!devices.empty()) {
-        bool ok = false;
-        for (int sel : devices)
-          if (sel == i) ok = true;
-        if (!ok) continue;
+  // One worker thread per GPU so cards mine in parallel with distinct nonce ranges.
+  std::mutex share_mu;
+  std::vector<std::thread> miners;
+  auto device_enabled = [&](int i) {
+    if (devices.empty()) return true;
+    for (int sel : devices)
+      if (sel == i) return true;
+    return false;
+  };
+  for (int i = 0; i < ocl->device_count(); ++i) {
+    if (!device_enabled(i)) continue;
+    miners.emplace_back([&, i] {
+      const uint64_t batch = 1ull << 22;  // 4M hashes per kernel launch
+      while (!g_stop) {
+        if (!has_job.load()) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          continue;
+        }
+        PreparedJob prep;
+        {
+          std::lock_guard<std::mutex> lock(job_mu);
+          prep = prepared;
+        }
+        const uint64_t start = counter.fetch_add(batch);
+        auto shares = ocl->scan(i, start, batch, g_stop);
+        if (!shares.empty()) {
+          std::lock_guard<std::mutex> lock(share_mu);
+          handle_shares(shares, prep);
+        }
       }
-      auto shares = ocl->scan(i, start, batch, g_stop);
-      handle_shares(shares, prep);
-    }
+    });
+  }
+  for (auto& t : miners) {
+    if (t.joinable()) t.join();
   }
 
   if (job_thread.joinable()) job_thread.join();

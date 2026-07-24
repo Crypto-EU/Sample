@@ -27,7 +27,8 @@ HiveOS-Archiv bauen:
 
 ```bash
 1Miner/scripts/package-hive.sh
-# → 1Miner/dist/1miner-hive-1.0.0.tar.gz
+# → 1Miner/releases/1miner-hive-1.0.1.tar.gz
+# Inhalt: 1miner-hive/h-manifest.conf … (Ordnername muss zum Archiv passen)
 ```
 
 ## Beispiele
@@ -53,8 +54,9 @@ saseulpool.com (NATS):
 ## HiveOS Flight Sheet
 
 - **Miner:** Custom  
-- **Name:** `1miner`  
-- **Installation URL:** Release-URL von `1miner-hive-1.0.0.tar.gz`  
+- **Name:** `1miner-hive`  
+- **Installation URL:**  
+  `https://raw.githubusercontent.com/Crypto-EU/Sample/cursor/1miner-amd-hiveos-3705/1Miner/releases/1miner-hive-1.0.1.tar.gz`  
 - **Pool URL:** z. B. `nl.rabbitminer.cc:1901` oder `nats://nats.saseulpool.com:4222`  
 - **Wallet template:** `%WAL%.%WORKER_NAME%`  
 - **Extra config:** `--amd-ocl --use-cpu` (oder `--nonce-mode latehex`)

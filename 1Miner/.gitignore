@@ -1,4 +1,5 @@
 /build/
+/dist/
 *.o
 *.a
 CMakeCache.txt
@@ -8,4 +9,3 @@ Makefile
 .cache/
 *.user
 *.log
-/dist/1miner/

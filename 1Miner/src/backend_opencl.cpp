@@ -9,8 +9,12 @@
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
-#include <unistd.h>
+#include <string>
 #include <vector>
+
+#if defined(__linux__)
+#include <unistd.h>
+#endif
 
 namespace oneminer {
 namespace {
@@ -30,9 +34,9 @@ std::string load_kernel_source() {
       "src/opencl_kernels.cl",
       "/usr/local/share/1miner/opencl_kernels.cl",
   };
-  // Also try next to the running binary (HiveOS custom miner dir).
+  #if defined(__linux__)
   char exe[4096] = {0};
-  const ssize_t n = ::readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+  const ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
   if (n > 0) {
     std::string p(exe, static_cast<size_t>(n));
     const auto slash = p.find_last_of('/');
@@ -40,6 +44,7 @@ std::string load_kernel_source() {
       paths.insert(paths.begin(), p.substr(0, slash + 1) + "opencl_kernels.cl");
     }
   }
+#endif
 
   for (const auto& path : paths) {
     std::ifstream f(path);

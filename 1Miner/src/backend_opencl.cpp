@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
+#include <unistd.h>
 #include <vector>
 
 namespace oneminer {
@@ -23,13 +24,25 @@ std::string load_kernel_source() {
       return ss.str();
     }
   }
-  const char* paths[] = {
+
+  std::vector<std::string> paths = {
       "opencl_kernels.cl",
       "src/opencl_kernels.cl",
       "/usr/local/share/1miner/opencl_kernels.cl",
-      nullptr};
-  for (int i = 0; paths[i]; ++i) {
-    std::ifstream f(paths[i]);
+  };
+  // Also try next to the running binary (HiveOS custom miner dir).
+  char exe[4096] = {0};
+  const ssize_t n = ::readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+  if (n > 0) {
+    std::string p(exe, static_cast<size_t>(n));
+    const auto slash = p.find_last_of('/');
+    if (slash != std::string::npos) {
+      paths.insert(paths.begin(), p.substr(0, slash + 1) + "opencl_kernels.cl");
+    }
+  }
+
+  for (const auto& path : paths) {
+    std::ifstream f(path);
     if (!f) continue;
     std::ostringstream ss;
     ss << f.rdbuf();
@@ -64,78 +77,128 @@ OpenClBackend::OpenClBackend() = default;
 bool OpenClBackend::init(std::string& err) {
   kernel_source_ = load_kernel_source();
   if (kernel_source_.empty()) {
-    err = "opencl_kernels.cl not found";
+    err = "opencl_kernels.cl not found (set ONE_MINER_KERNEL_PATH or place opencl_kernels.cl next to binary)";
     return false;
   }
+
+  auto lower = [](std::string s) {
+    for (char& c : s) c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
+    return s;
+  };
+  auto contains_any = [&](const std::string& hay, std::initializer_list<const char*> needles) {
+    for (const char* n : needles) {
+      if (hay.find(n) != std::string::npos) return true;
+    }
+    return false;
+  };
+  auto is_nvidia = [&](const std::string& a, const std::string& b) {
+    return contains_any(a, {"nvidia"}) || contains_any(b, {"nvidia", "geforce", "quadro", "tesla", "rtx ", "gtx ", "cmp "});
+  };
+  auto is_intel = [&](const std::string& a, const std::string& b) {
+    return contains_any(a, {"intel"}) || contains_any(b, {"intel", "uhd graphics", "iris"});
+  };
+  // Broad AMD match used by HiveOS / ROCm / AMDGPU-PRO / Mesa.
+  auto is_amdish = [&](const std::string& vendor_l, const std::string& name_l, const std::string& plat_l) {
+    if (contains_any(vendor_l, {"advanced micro devices", "amd", "ati"})) return true;
+    if (contains_any(name_l, {"radeon", "amd ", "gfx", "ellesmere", "polaris", "vega", "navi",
+                              "instinct", "firepro", "rx ", "r9 ", "r7 ", "hawaii", "fiji",
+                              "tonga", "pitcairn", "bonaire", "algol"}))
+      return true;
+    if (contains_any(plat_l, {"advanced micro devices", "amd accelerated", "amd ", "rocm"})) return true;
+    // Mesa/rusticl/clover often expose AMD cards with vendor=Mesa.
+    if (contains_any(vendor_l, {"mesa"}) &&
+        contains_any(name_l, {"amd", "radeon", "gfx", "llvm"}))
+      return true;
+    return false;
+  };
 
   cl_uint nplat = 0;
   cl_int rc = clGetPlatformIDs(0, nullptr, &nplat);
   if (rc != CL_SUCCESS || nplat == 0) {
-    err = "no OpenCL platforms";
+    err = "no OpenCL platforms (install AMD OpenCL ICD / amdgpu-pro or ROCm; check clinfo)";
     return false;
   }
   std::vector<cl_platform_id> plats(nplat);
   clGetPlatformIDs(nplat, plats.data(), nullptr);
+  log_info("OpenCL platforms: " + std::to_string(nplat));
+
+  std::string diag;
 
   for (auto plat : plats) {
     char plat_vendor[256] = {0};
     char plat_name[256] = {0};
     clGetPlatformInfo(plat, CL_PLATFORM_VENDOR, sizeof(plat_vendor), plat_vendor, nullptr);
     clGetPlatformInfo(plat, CL_PLATFORM_NAME, sizeof(plat_name), plat_name, nullptr);
-    std::string pv = plat_vendor;
-    std::string pn = plat_name;
-    auto lower = [](std::string s) {
-      for (char& c : s) c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
-      return s;
-    };
-    const std::string pv_l = lower(pv);
-    const std::string pn_l = lower(pn);
-    const bool amd_platform =
-        pv_l.find("advanced micro devices") != std::string::npos ||
-        pv_l.find("amd") != std::string::npos ||
-        pn_l.find("amd") != std::string::npos ||
-        pn_l.find("rocm") != std::string::npos;
-    // Explicitly skip NVIDIA / Intel compute platforms.
-    if (pv_l.find("nvidia") != std::string::npos || pn_l.find("nvidia") != std::string::npos ||
-        pv_l.find("intel") != std::string::npos) {
-      log_info(std::string("skip OpenCL platform: ") + plat_vendor + " / " + plat_name);
-      continue;
-    }
-    if (!amd_platform) {
-      log_info(std::string("skip non-AMD OpenCL platform: ") + plat_vendor + " / " + plat_name);
+    const std::string pv_l = lower(plat_vendor);
+    const std::string pn_l = lower(plat_name);
+    const std::string plat_l = pv_l + " " + pn_l;
+    log_info(std::string("OpenCL platform: vendor=\"") + plat_vendor + "\" name=\"" + plat_name + "\"");
+
+    if (is_nvidia(pv_l, pn_l)) {
+      log_info("skip NVIDIA platform");
+      diag += "skipped NVIDIA platform; ";
       continue;
     }
 
+    // Prefer GPUs; if none, also probe ALL (some ICDs mis-type devices).
+    cl_device_type type = CL_DEVICE_TYPE_GPU;
     cl_uint ndev = 0;
-    rc = clGetDeviceIDs(plat, CL_DEVICE_TYPE_GPU, 0, nullptr, &ndev);
-    if (rc != CL_SUCCESS || ndev == 0) continue;
+    rc = clGetDeviceIDs(plat, type, 0, nullptr, &ndev);
+    if (rc != CL_SUCCESS || ndev == 0) {
+      type = CL_DEVICE_TYPE_ALL;
+      ndev = 0;
+      rc = clGetDeviceIDs(plat, type, 0, nullptr, &ndev);
+    }
+    if (rc != CL_SUCCESS || ndev == 0) {
+      log_info("platform has no OpenCL devices");
+      continue;
+    }
     std::vector<cl_device_id> devs(ndev);
-    clGetDeviceIDs(plat, CL_DEVICE_TYPE_GPU, ndev, devs.data(), nullptr);
+    clGetDeviceIDs(plat, type, ndev, devs.data(), nullptr);
+
     for (auto dev : devs) {
       char name[256] = {0};
       char vendor[256] = {0};
+      cl_device_type dtype = 0;
       clGetDeviceInfo(dev, CL_DEVICE_NAME, sizeof(name), name, nullptr);
       clGetDeviceInfo(dev, CL_DEVICE_VENDOR, sizeof(vendor), vendor, nullptr);
+      clGetDeviceInfo(dev, CL_DEVICE_TYPE, sizeof(dtype), &dtype, nullptr);
       const std::string vendor_l = lower(vendor);
       const std::string name_l = lower(name);
-      if (vendor_l.find("nvidia") != std::string::npos || name_l.find("geforce") != std::string::npos ||
-          name_l.find("quadro") != std::string::npos || name_l.find("tesla") != std::string::npos ||
-          name_l.find("rtx") != std::string::npos || name_l.find("gtx") != std::string::npos) {
-        log_info(std::string("skip NVIDIA device: ") + name);
+      log_info(std::string("  device: vendor=\"") + vendor + "\" name=\"" + name + "\" type=" +
+               std::to_string(static_cast<unsigned long long>(dtype)));
+
+      if (!(dtype & CL_DEVICE_TYPE_GPU) && !(dtype & CL_DEVICE_TYPE_ACCELERATOR)) {
+        log_info("  skip non-GPU device");
         continue;
       }
-      if (!(vendor_l.find("amd") != std::string::npos ||
-            vendor_l.find("advanced micro devices") != std::string::npos ||
-            name_l.find("radeon") != std::string::npos || name_l.find("gfx") != std::string::npos)) {
-        log_info(std::string("skip non-AMD GPU: ") + vendor + " / " + name);
+      if (is_nvidia(vendor_l, name_l)) {
+        log_info("  skip NVIDIA device");
         continue;
+      }
+      if (is_intel(vendor_l, name_l)) {
+        log_info("  skip Intel device");
+        continue;
+      }
+      if (!is_amdish(vendor_l, name_l, plat_l)) {
+        // Last resort on AMD-only HiveOS farms: accept unknown GPU on non-NVIDIA/non-Intel platform.
+        // Still reject if name clearly looks like CPU/OpenCL CPU device.
+        if (contains_any(name_l, {"cpu", "pthread", "host"})) {
+          log_info("  skip CPU-like device");
+          continue;
+        }
+        log_warn(std::string("  accepting unclassified GPU on non-NVIDIA platform: ") + name);
       }
 
       cl_context_properties props[] = {CL_CONTEXT_PLATFORM, (cl_context_properties)plat, 0};
       cl_context ctx = clCreateContext(props, 1, &dev, nullptr, nullptr, &rc);
-      if (rc != CL_SUCCESS) continue;
+      if (rc != CL_SUCCESS) {
+        log_warn(std::string("  clCreateContext failed for ") + name + " rc=" + std::to_string(rc));
+        continue;
+      }
       cl_command_queue q = clCreateCommandQueue(ctx, dev, 0, &rc);
       if (rc != CL_SUCCESS) {
+        log_warn(std::string("  clCreateCommandQueue failed for ") + name + " rc=" + std::to_string(rc));
         clReleaseContext(ctx);
         continue;
       }
@@ -151,9 +214,10 @@ bool OpenClBackend::init(std::string& err) {
       if (rc != CL_SUCCESS) {
         size_t log_size = 0;
         clGetProgramBuildInfo(prog, dev, CL_PROGRAM_BUILD_LOG, 0, nullptr, &log_size);
-        std::string log(log_size, '\0');
-        clGetProgramBuildInfo(prog, dev, CL_PROGRAM_BUILD_LOG, log_size, log.data(), nullptr);
-        err = "OpenCL build failed for " + std::string(name) + ": " + log;
+        std::string blog(log_size, '\0');
+        clGetProgramBuildInfo(prog, dev, CL_PROGRAM_BUILD_LOG, log_size, blog.data(), nullptr);
+        log_warn(std::string("  OpenCL build failed for ") + name + ": " + blog);
+        err = "OpenCL build failed for " + std::string(name) + ": " + blog;
         clReleaseProgram(prog);
         clReleaseCommandQueue(q);
         clReleaseContext(ctx);
@@ -174,11 +238,11 @@ bool OpenClBackend::init(std::string& err) {
       d.kernel = ker;
       d.name = name;
       devices_.push_back(d);
-      log_info(std::string("AMD OpenCL GPU: ") + name);
+      log_info(std::string("AMD OpenCL GPU ready: ") + name);
     }
   }
   if (devices_.empty()) {
-    err = "no AMD OpenCL GPUs found (NVIDIA/CPU disabled)";
+    err = "no AMD OpenCL GPUs found (NVIDIA/CPU disabled). Run clinfo on the rig and check amdgpu OpenCL ICD. " + diag;
     return false;
   }
   return true;

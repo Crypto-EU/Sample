@@ -19,7 +19,7 @@ namespace {
 std::atomic<bool> g_stop{false};
 void on_signal(int) { g_stop = true; }
 
-constexpr const char* kVersion = "1.0.11";
+constexpr const char* kVersion = "1.0.12";
 }  // namespace
 
 static void usage(const char* argv0) {
@@ -37,9 +37,14 @@ static void usage(const char* argv0) {
       << "  --amd-ocl                         Explicit AMD OpenCL (default, optional)\n"
       << "  --device LIST                     Comma AMD GPU indices (default: all)\n"
       << "  --stats-file PATH                 Default: /tmp/saseul-miner-stats.json\n"
+      << "  --autotune                        Per-GPU OpenCL tune (default: on)\n"
+      << "  --no-autotune                     Skip autotune; use defaults / cache\n"
+      << "  --autotune-force                  Retune even if cache exists\n"
+      << "  --autotune-cache PATH             Default: /tmp/1miner-autotune.json\n"
       << "  --help\n\n"
       << "HiveOS example:\n"
-      << "  ./1miner --pool nl.rabbitminer.cc:1901 --wallet WALLET.worker\n";
+      << "  ./1miner --pool nl.rabbitminer.cc:1901 --wallet WALLET.worker\n"
+      << "  Extra config: --autotune-force   (retune each card once)\n";
 }
 
 int main(int argc, char** argv) {
@@ -50,6 +55,9 @@ int main(int argc, char** argv) {
   std::string worker;
   std::string nonce_mode_s = "classic";
   std::string stats_file = "/tmp/saseul-miner-stats.json";
+  std::string autotune_cache = "/tmp/1miner-autotune.json";
+  bool do_autotune = true;
+  bool force_autotune = false;
   std::vector<int> devices;
 
   for (int i = 1; i < argc; ++i) {
@@ -80,6 +88,15 @@ int main(int argc, char** argv) {
       std::string v;
       if (!need(v)) return 2;
       for (const auto& t : split(v, ',')) devices.push_back(std::stoi(t));
+    } else if (a == "--autotune") {
+      do_autotune = true;
+    } else if (a == "--no-autotune") {
+      do_autotune = false;
+    } else if (a == "--autotune-force") {
+      force_autotune = true;
+      do_autotune = true;
+    } else if (a == "--autotune-cache") {
+      if (!need(autotune_cache)) return 2;
     } else if (a == "--use-cpu" || a == "--threads" || a == "--cuda" || a == "--nvidia-ocl") {
       log_error(a + " is disabled: 1Miner is AMD-GPU-only");
       return 2;
@@ -112,7 +129,8 @@ int main(int argc, char** argv) {
   std::signal(SIGTERM, on_signal);
 
   log_info(std::string("1Miner v") + kVersion +
-           " AMD-only OpenCL fast-path (hasher 5.2 PoW), nonce_mode=" + nonce_mode_name(mode));
+           " AMD-only OpenCL + per-GPU autotune (hasher 5.2 PoW), nonce_mode=" +
+           nonce_mode_name(mode));
 
 #ifndef ONE_MINER_HAS_OPENCL
   log_error("OpenCL support was not compiled into this binary");
@@ -261,6 +279,62 @@ int main(int argc, char** argv) {
     }
   };
 
+  auto device_enabled = [&](int i) {
+    if (devices.empty()) return true;
+    for (int sel : devices)
+      if (sel == i) return true;
+    return false;
+  };
+
+  // Wait for first valid job, then autotune each selected GPU before mining.
+  log_info("waiting for first job…");
+  while (!g_stop && !has_job.load()) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  if (g_stop) {
+    if (job_thread.joinable()) {
+      // signal already set; join after miners not started
+    }
+    if (nats) nats->stop();
+    if (rabbit) rabbit->close();
+    if (job_thread.joinable()) job_thread.join();
+    return 0;
+  }
+
+  PreparedJob tune_prep;
+  {
+    MiningJob job;
+    {
+      std::lock_guard<std::mutex> lock(job_mu);
+      job = current_job;
+    }
+    std::string perr;
+    if (!prepare_job(job, mode, pool_now_us(), tune_prep, perr)) {
+      log_error("prepare_job for autotune failed: " + perr);
+      g_stop = true;
+    } else if (do_autotune) {
+      log_info(std::string("autotune ") + (force_autotune ? "FORCE " : "") +
+               "starting (cache=" + autotune_cache + ")");
+      ocl->autotune(tune_prep, g_stop, autotune_cache, force_autotune, devices);
+      for (int i = 0; i < ocl->device_count(); ++i) {
+        if (!device_enabled(i)) continue;
+        const auto t = ocl->tune(i);
+        log_info("gpu[" + std::to_string(i) + "]=" + ocl->device_name(i) +
+                 " tune local=" + std::to_string(t.local) +
+                 " intensity=" + std::to_string(t.intensity) +
+                 " kernel=" + std::string(t.use_u4 ? "u4" : "u1") +
+                 " batch=" + std::to_string(t.batch) +
+                 " ~" + std::to_string(t.mhs) + " MH/s");
+      }
+    } else {
+      if (ocl->apply_tune_cache(autotune_cache)) {
+        log_info("autotune disabled — applied cache " + autotune_cache);
+      } else {
+        log_info("autotune disabled — using launch defaults");
+      }
+    }
+  }
+
   std::thread stats_thread([&] {
     while (!g_stop) {
       stats.uptime_seconds = std::chrono::duration_cast<std::chrono::seconds>(
@@ -269,12 +343,7 @@ int main(int argc, char** argv) {
       stats.devices.clear();
       stats.total_mhs = 0;
       for (int i = 0; i < ocl->device_count(); ++i) {
-        if (!devices.empty()) {
-          bool ok = false;
-          for (int sel : devices)
-            if (sel == i) ok = true;
-          if (!ok) continue;
-        }
+        if (!device_enabled(i)) continue;
         DeviceStatus d;
         d.backend = "AMD";
         d.index = i;
@@ -298,16 +367,9 @@ int main(int argc, char** argv) {
   // midstate/blob stay hot; refresh before the pool's 5s drift window.
   std::mutex share_mu;
   std::vector<std::thread> miners;
-  auto device_enabled = [&](int i) {
-    if (devices.empty()) return true;
-    for (int sel : devices)
-      if (sel == i) return true;
-    return false;
-  };
   for (int i = 0; i < ocl->device_count(); ++i) {
     if (!device_enabled(i)) continue;
     miners.emplace_back([&, i] {
-      const uint64_t batch = 1ull << 26;  // 64M hashes per launch
       PreparedJob prep;
       std::string prep_job_id;
       int64_t prep_ts = 0;
@@ -342,8 +404,8 @@ int main(int argc, char** argv) {
           prep_ts = ts;
           prep_at = now_st;
         }
-        // Prefer full hi32 windows for the fast kernel.
-        uint64_t this_batch = batch;
+        uint64_t this_batch = ocl->tuned_batch(i);
+        if (this_batch < (1ull << 20)) this_batch = 1ull << 24;
         uint64_t start = counter.fetch_add(this_batch);
         const uint64_t room = (uint64_t{1} << 32) - (start & 0xffffffffull);
         if (room != 0 && room < this_batch) this_batch = room;

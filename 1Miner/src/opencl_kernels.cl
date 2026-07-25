@@ -257,7 +257,47 @@ static inline int digest_le_target_claim(__global ResultBlob* result, ulong ctr,
   if (digest_le_target_claim(result, (CTR), t0,t1,t2,t3,t4,t5,t6,t7, d0,d1,d2,d3,d4,d5,d6,d7)) return; \
 } while (0)
 
-// Primary hot path: hi32 window, 4 contiguous nonces per iteration, macro-inlined SHA.
+// Primary hot path variants (autotune picks per GPU):
+//  - mine_classic_hi32_u1: 1 nonce per loop (often higher occupancy)
+//  - mine_classic_hi32:    4 contiguous nonces per loop
+__attribute__((work_group_size_hint(64, 1, 1)))
+__kernel void mine_classic_hi32_u1(__global const JobBlob* job,
+                                   ulong start_counter,
+                                   ulong count,
+                                   uint h0,
+                                   uint h1,
+                                   __global ResultBlob* result) {
+  const ulong gid = (ulong)get_global_id(0);
+  const ulong stride = (ulong)get_global_size(0);
+
+  const uint mid0 = job->midstate[0], mid1 = job->midstate[1], mid2 = job->midstate[2], mid3 = job->midstate[3];
+  const uint mid4 = job->midstate[4], mid5 = job->midstate[5], mid6 = job->midstate[6], mid7 = job->midstate[7];
+  const uint t0 = job->target[0], t1 = job->target[1], t2 = job->target[2], t3 = job->target[3];
+  const uint t4 = job->target[4], t5 = job->target[5], t6 = job->target[6], t7 = job->target[7];
+  const uint wr0 = job->work_after_r4[0], wr1 = job->work_after_r4[1], wr2 = job->work_after_r4[2], wr3 = job->work_after_r4[3];
+  const uint wr4 = job->work_after_r4[4], wr5 = job->work_after_r4[5], wr6 = job->work_after_r4[6], wr7 = job->work_after_r4[7];
+
+  const uint b3 = job->block0[3];
+  const uint fw0 = job->block0[0];
+  const uint fw1 = job->block0[1];
+  const uint fw2 = job->block0[2];
+  const uint fw3 = (b3 & 0xFFFF0000u) | ((h0 >> 16) & 0xFFFFu);
+  const uint fw4 = ((h0 & 0xFFFFu) << 16) | ((h1 >> 16) & 0xFFFFu);
+  const uint h1_lo = (h1 & 0xFFFFu);
+
+  uint found_poll = 0u;
+  for (ulong idx = gid; idx < count; idx += stride) {
+    if (((++found_poll) & 511u) == 0u && result->found) return;
+    const ulong ctr = start_counter + idx;
+    uint hx2, hx3;
+    encode_lo32_words((uint)ctr, &hx2, &hx3);
+    TRY_HASH_R5(ctr,
+                (h1_lo << 16) | ((hx2 >> 16) & 0xFFFFu),
+                ((hx2 & 0xFFFFu) << 16) | ((hx3 >> 16) & 0xFFFFu),
+                ((hx3 & 0xFFFFu) << 16) | 0x00008000u);
+  }
+}
+
 __attribute__((work_group_size_hint(64, 1, 1)))
 __kernel void mine_classic_hi32(__global const JobBlob* job,
                                 ulong start_counter,

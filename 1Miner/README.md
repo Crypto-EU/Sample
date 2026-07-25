@@ -27,7 +27,7 @@ HiveOS-Archiv:
 
 ```bash
 1Miner/scripts/package-hive.sh
-# → 1Miner/releases/1miner-hive-1.0.11.tar.gz
+# → 1Miner/releases/1miner-hive-1.0.12.tar.gz
 ```
 
 ## Beispiele
@@ -38,15 +38,28 @@ HiveOS-Archiv:
 ./1miner --nats nats://nats.saseulpool.com:4222 --wallet WALLET --id rig1
 ```
 
+## Autotune (pro GPU)
+
+Beim Start (nach dem ersten Job) misst 1Miner **jede AMD-Karte einzeln**: local size, intensity, u1/u4-Kernel und Batch-Größe. Ergebnis landet in `/tmp/1miner-autotune.json` und wird beim nächsten Start wiederverwendet.
+
+| Flag | Wirkung |
+|------|---------|
+| `--autotune` | an (Default) |
+| `--no-autotune` | aus (Defaults / Cache) |
+| `--autotune-force` | neu messen, Cache ignorieren |
+| `--autotune-cache PATH` | Cache-Datei |
+
+HiveOS Extra config zum einmaligen Retune: `--autotune-force`
+
 ## HiveOS Flight Sheet
 
 - **Miner:** Custom  
 - **Name:** `1miner-hive`  
 - **Installation URL:**  
-  `https://raw.githubusercontent.com/Crypto-EU/Sample/cursor/1miner-amd-hiveos-3705/1Miner/releases/1miner-hive-1.0.11.tar.gz`  
+  `https://raw.githubusercontent.com/Crypto-EU/Sample/cursor/1miner-amd-hiveos-3705/1Miner/releases/1miner-hive-1.0.12.tar.gz`  
 - **Pool URL:** z. B. `nl.rabbitminer.cc:1901`  
 - **Wallet template:** `%WAL%.%WORKER_NAME%`  
-- **Extra config:** leer lassen, oder z. B. `--device 0,1` / `--nonce-mode latehex`  
+- **Extra config:** leer lassen, oder z. B. `--device 0,1` / `--autotune-force`  
   (nicht `--use-cpu` / `--cuda` / `--nvidia-ocl`)
 
 | Port | Modus |
@@ -58,6 +71,6 @@ HiveOS-Archiv:
 
 ## Hinweis
 
-1Miner v1.0.11: hasher-5.2 PoW + **schnellere OpenCL-Hot-Path** (macro-inlined SHA, 4-way unroll, Job-Buffer-Cache, 64M-Batches). HiveOS-Build gegen Ubuntu 20.04.
+1Miner v1.0.12: hasher-5.2 PoW + **per-GPU Autotune** (local/intensity/kernel/batch). HiveOS-Build gegen Ubuntu 20.04.
 
 Ohne AMD-OpenCL-Gerät beendet 1Miner mit Fehler. NVIDIA- und CPU-Backends sind absichtlich deaktiviert.

@@ -38,7 +38,6 @@ class CpuBackend {
   explicit CpuBackend(int threads);
 
   void set_job(const PreparedJob& job);
-  // Scan a counter range; returns found shares.
   std::vector<ShareCandidate> scan(uint64_t start, uint64_t count, int device_index,
                                    std::atomic<bool>& stop_flag);
   std::vector<ShareCandidate> scan(uint64_t start, uint64_t count, int device_index,
@@ -58,6 +57,14 @@ class CpuBackend {
 };
 
 #ifdef ONE_MINER_HAS_OPENCL
+struct GpuTune {
+  size_t local = 64;
+  unsigned intensity = 32;  // global ≈ cu * local * intensity
+  bool use_u4 = false;      // false = hi32_u1, true = hi32 (4-way)
+  uint64_t batch = 1ull << 24;
+  double mhs = 0;
+};
+
 class OpenClBackend {
  public:
   OpenClBackend();
@@ -65,7 +72,16 @@ class OpenClBackend {
   bool init(std::string& err);
   int device_count() const { return static_cast<int>(devices_.size()); }
   std::string device_name(int i) const;
-  // Mine with an explicit prepared job (hasher: midstate tied to submit timestamp).
+  GpuTune tune(int i) const;
+  uint64_t tuned_batch(int i) const;
+  bool apply_tune_cache(const std::string& path);
+
+  // Benchmark launch params per GPU; writes cache file when path non-empty.
+  // If only_devices is non-empty, only those indices are tuned.
+  void autotune(const PreparedJob& job, std::atomic<bool>& stop_flag,
+                const std::string& cache_path, bool force,
+                const std::vector<int>& only_devices = {});
+
   std::vector<ShareCandidate> scan(int device_index, uint64_t start, uint64_t count,
                                    const PreparedJob& job, std::atomic<bool>& stop_flag);
   double last_mhs(int device_index) const;
@@ -77,8 +93,9 @@ class OpenClBackend {
     void* context = nullptr;
     void* queue = nullptr;
     void* program = nullptr;
-    void* kernel = nullptr;       // mine_classic_fast
-    void* kernel_hi32 = nullptr;  // mine_classic_hi32
+    void* kernel = nullptr;         // mine_classic_fast
+    void* kernel_hi32 = nullptr;    // mine_classic_hi32 (u4)
+    void* kernel_hi32_u1 = nullptr; // mine_classic_hi32_u1
     void* job_mem = nullptr;
     void* res_mem = nullptr;
     std::string name;
@@ -86,14 +103,22 @@ class OpenClBackend {
     unsigned compute_units = 1;
     std::atomic<double> last_mhs{0};
     std::atomic<uint64_t> total_hashes{0};
-    // Skip redundant job-buffer uploads when midstate/hi32 unchanged.
     int64_t cached_ts = 0;
     uint32_t cached_hi32 = 0xffffffffu;
     std::string cached_header;
     bool blob_on_device = false;
+    GpuTune tune{};
+    bool tuned = false;
   };
   std::vector<std::unique_ptr<Dev>> devices_;
   std::string kernel_source_;
+
+  // Timed kernel run; returns MH/s (0 on failure). Does not update share stats.
+  double bench_launch(Dev& d, const PreparedJob& job, uint64_t start, uint64_t count,
+                      size_t local, unsigned intensity, bool use_u4,
+                      std::atomic<bool>& stop_flag);
+  bool load_tune_cache(const std::string& path);
+  void save_tune_cache(const std::string& path) const;
 };
 #endif
 

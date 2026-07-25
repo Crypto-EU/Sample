@@ -4,12 +4,14 @@
 
 #include <CL/cl.h>
 
+#include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -170,8 +172,9 @@ OpenClBackend::~OpenClBackend() {
     if (!d) continue;
     if (d->job_mem) clReleaseMemObject(static_cast<cl_mem>(d->job_mem));
     if (d->res_mem) clReleaseMemObject(static_cast<cl_mem>(d->res_mem));
-    if (d->kernel) clReleaseKernel(static_cast<cl_kernel>(d->kernel));
+    if (d->kernel_hi32_u1) clReleaseKernel(static_cast<cl_kernel>(d->kernel_hi32_u1));
     if (d->kernel_hi32) clReleaseKernel(static_cast<cl_kernel>(d->kernel_hi32));
+    if (d->kernel) clReleaseKernel(static_cast<cl_kernel>(d->kernel));
     if (d->program) clReleaseProgram(static_cast<cl_program>(d->program));
     if (d->queue) clReleaseCommandQueue(static_cast<cl_command_queue>(d->queue));
     if (d->context) clReleaseContext(static_cast<cl_context>(d->context));
@@ -306,12 +309,22 @@ bool OpenClBackend::init(std::string& err) {
         clReleaseContext(ctx);
         continue;
       }
+      cl_kernel ker_hi_u1 = clCreateKernel(prog, "mine_classic_hi32_u1", &rc);
+      if (rc != CL_SUCCESS) {
+        clReleaseKernel(ker_hi);
+        clReleaseKernel(ker);
+        clReleaseProgram(prog);
+        clReleaseCommandQueue(q);
+        clReleaseContext(ctx);
+        continue;
+      }
 
       JobBlobHost zjob{};
       ResultBlobHost zres{};
       cl_mem job_mem =
           clCreateBuffer(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(zjob), &zjob, &rc);
       if (rc != CL_SUCCESS || !job_mem) {
+        clReleaseKernel(ker_hi_u1);
         clReleaseKernel(ker_hi);
         clReleaseKernel(ker);
         clReleaseProgram(prog);
@@ -323,6 +336,7 @@ bool OpenClBackend::init(std::string& err) {
           clCreateBuffer(ctx, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(zres), &zres, &rc);
       if (rc != CL_SUCCESS || !res_mem) {
         clReleaseMemObject(job_mem);
+        clReleaseKernel(ker_hi_u1);
         clReleaseKernel(ker_hi);
         clReleaseKernel(ker);
         clReleaseProgram(prog);
@@ -332,7 +346,8 @@ bool OpenClBackend::init(std::string& err) {
       }
 
       size_t max_wg = 256;
-      clGetKernelWorkGroupInfo(ker, dev, CL_KERNEL_WORK_GROUP_SIZE, sizeof(max_wg), &max_wg, nullptr);
+      clGetKernelWorkGroupInfo(ker_hi_u1, dev, CL_KERNEL_WORK_GROUP_SIZE, sizeof(max_wg), &max_wg,
+                               nullptr);
       cl_uint cu = 0;
       clGetDeviceInfo(dev, CL_DEVICE_MAX_COMPUTE_UNITS, sizeof(cu), &cu, nullptr);
 
@@ -343,14 +358,20 @@ bool OpenClBackend::init(std::string& err) {
       d->program = prog;
       d->kernel = ker;
       d->kernel_hi32 = ker_hi;
+      d->kernel_hi32_u1 = ker_hi_u1;
       d->job_mem = job_mem;
       d->res_mem = res_mem;
       d->name = name;
       d->max_work_group = max_wg ? max_wg : 256;
       d->compute_units = cu ? cu : 1;
+      d->tune.local = 64;
+      if (d->tune.local > d->max_work_group) d->tune.local = d->max_work_group;
+      d->tune.intensity = 64;
+      d->tune.use_u4 = false;
+      d->tune.batch = 1ull << 26;  // 64M — good default before/without autotune
       devices_.push_back(std::move(d));
-      log_info(std::string("AMD OpenCL GPU ready (fast+hi32): ") + name +
-               " cu=" + std::to_string(cu) + " max_wg=" + std::to_string(max_wg));
+      log_info(std::string("AMD OpenCL GPU ready: ") + name + " cu=" + std::to_string(cu) +
+               " max_wg=" + std::to_string(max_wg));
     }
   }
   if (devices_.empty()) {
@@ -364,6 +385,21 @@ bool OpenClBackend::init(std::string& err) {
 std::string OpenClBackend::device_name(int i) const {
   if (i < 0 || i >= device_count()) return {};
   return devices_[static_cast<size_t>(i)]->name;
+}
+
+GpuTune OpenClBackend::tune(int i) const {
+  if (i < 0 || i >= device_count()) return {};
+  return devices_[static_cast<size_t>(i)]->tune;
+}
+
+uint64_t OpenClBackend::tuned_batch(int i) const {
+  if (i < 0 || i >= device_count()) return 1ull << 24;
+  return devices_[static_cast<size_t>(i)]->tune.batch;
+}
+
+bool OpenClBackend::apply_tune_cache(const std::string& path) {
+  if (path.empty()) return false;
+  return load_tune_cache(path);
 }
 
 double OpenClBackend::last_mhs(int device_index) const {
@@ -460,7 +496,12 @@ std::vector<ShareCandidate> OpenClBackend::scan(int device_index, uint64_t start
     return found;
   }
 
-  cl_kernel ker = static_cast<cl_kernel>(use_hi32 ? d.kernel_hi32 : d.kernel);
+  cl_kernel ker = nullptr;
+  if (use_hi32) {
+    ker = static_cast<cl_kernel>(d.tune.use_u4 ? d.kernel_hi32 : d.kernel_hi32_u1);
+  } else {
+    ker = static_cast<cl_kernel>(d.kernel);
+  }
   int arg = 0;
   rc = clSetKernelArg(ker, arg++, sizeof(cl_mem), &job_mem);
   rc |= clSetKernelArg(ker, arg++, sizeof(cl_ulong), &start);
@@ -475,25 +516,20 @@ std::vector<ShareCandidate> OpenClBackend::scan(int device_index, uint64_t start
     return found;
   }
 
-  // RDNA/GCN: prefer local=64; flood CUs with many groups.
-  size_t local = 64;
-  if (d.max_work_group < local) local = d.max_work_group ? d.max_work_group : 64;
-  size_t global = static_cast<size_t>(d.compute_units) * local * 64;
-  if (global < 262144) global = 262144;
-  // Round up so 4-way unroll coverage is clean, then clamp to count.
+  size_t local = d.tune.local ? d.tune.local : 64;
+  if (local > d.max_work_group) local = d.max_work_group;
+  if (local == 0) local = 64;
+  unsigned intensity = d.tune.intensity ? d.tune.intensity : 32;
+  size_t global = static_cast<size_t>(d.compute_units) * local * intensity;
+  if (global < local * 64) global = local * 64;
   if (global > static_cast<size_t>(count)) global = static_cast<size_t>(count);
   if (global == 0) global = local;
-  global = ((global + local - 1) / local) * local;
-  if (global > static_cast<size_t>(count)) {
-    // Keep a full multiple of local; leftover counters still covered by stride loop.
-    if (global >= local) global -= local;
-    if (global == 0) global = local;
-  }
+  global = (global / local) * local;
+  if (global == 0) global = local;
 
   const auto t0 = std::chrono::steady_clock::now();
   rc = clEnqueueNDRangeKernel(q, ker, 1, nullptr, &global, &local, 0, nullptr, nullptr);
   if (rc != CL_SUCCESS) {
-    // Retry without explicit local size.
     rc = clEnqueueNDRangeKernel(q, ker, 1, nullptr, &global, nullptr, 0, nullptr, nullptr);
   }
   if (rc != CL_SUCCESS) {
@@ -514,7 +550,7 @@ std::vector<ShareCandidate> OpenClBackend::scan(int device_index, uint64_t start
   if (sec > 1e-9) {
     const double mhs = (static_cast<double>(count) / sec) / 1e6;
     const double prev = d.last_mhs.load();
-    d.last_mhs.store(prev > 0.0 ? (prev * 0.6 + mhs * 0.4) : mhs);
+    d.last_mhs.store(prev > 0.0 ? (prev * 0.5 + mhs * 0.5) : mhs);
   }
 
   if (result.found) {
@@ -541,6 +577,330 @@ std::vector<ShareCandidate> OpenClBackend::scan(int device_index, uint64_t start
     }
   }
   return found;
+}
+
+double OpenClBackend::bench_launch(Dev& d, const PreparedJob& job, uint64_t start, uint64_t count,
+                                   size_t local, unsigned intensity, bool use_u4,
+                                   std::atomic<bool>& stop_flag) {
+  if (stop_flag.load() || count == 0 || job.prefix_ascii.size() < 142) return 0;
+
+  JobBlobHost blob{};
+  for (int i = 0; i < 8; ++i) blob.midstate[i] = job.midstate[i];
+  for (int i = 0; i < 8; ++i) {
+    blob.target[i] = (uint32_t(job.target[i * 4]) << 24) | (uint32_t(job.target[i * 4 + 1]) << 16) |
+                     (uint32_t(job.target[i * 4 + 2]) << 8) | uint32_t(job.target[i * 4 + 3]);
+  }
+  const auto* p = reinterpret_cast<const uint8_t*>(job.prefix_ascii.data());
+  uint8_t rem[16] = {0};
+  for (size_t i = 0; i < 14; ++i) rem[i] = p[128 + i];
+  auto be4 = [](uint8_t a, uint8_t b, uint8_t c, uint8_t d4) -> uint32_t {
+    return (uint32_t(a) << 24) | (uint32_t(b) << 16) | (uint32_t(c) << 8) | uint32_t(d4);
+  };
+  blob.block0[0] = be4(rem[0], rem[1], rem[2], rem[3]);
+  blob.block0[1] = be4(rem[4], rem[5], rem[6], rem[7]);
+  blob.block0[2] = be4(rem[8], rem[9], rem[10], rem[11]);
+  blob.block0[3] = (uint32_t(rem[12]) << 24) | (uint32_t(rem[13]) << 16);
+  for (int i = 4; i < 15; ++i) blob.block0[i] = 0;
+  blob.block0[15] = 0x000004f0u;
+  {
+    uint32_t w[16] = {};
+    for (int i = 0; i < 16; ++i) w[i] = blob.block0[i];
+    sha256_partial_work(blob.midstate, w, 3, blob.work_after_r2);
+    blob.flags = 1u;
+  }
+  const bool use_hi32 = ((start >> 32) == ((start + count - 1) >> 32));
+  uint32_t h0 = 0, h1 = 0;
+  if (use_hi32) {
+    encode_hi32_words(static_cast<uint32_t>(start >> 32), h0, h1);
+    uint32_t w[16] = {};
+    for (int i = 0; i < 16; ++i) w[i] = blob.block0[i];
+    w[3] = (blob.block0[3] & 0xFFFF0000u) | ((h0 >> 16) & 0xFFFFu);
+    w[4] = ((h0 & 0xFFFFu) << 16) | ((h1 >> 16) & 0xFFFFu);
+    sha256_partial_work(blob.midstate, w, 5, blob.work_after_r4);
+    blob.flags |= 2u;
+  } else {
+    return 0;
+  }
+
+  cl_command_queue q = static_cast<cl_command_queue>(d.queue);
+  cl_mem job_mem = static_cast<cl_mem>(d.job_mem);
+  cl_mem res_mem = static_cast<cl_mem>(d.res_mem);
+  ResultBlobHost zero{};
+  cl_int rc =
+      clEnqueueWriteBuffer(q, job_mem, CL_FALSE, 0, sizeof(blob), &blob, 0, nullptr, nullptr);
+  rc |= clEnqueueWriteBuffer(q, res_mem, CL_FALSE, 0, sizeof(zero), &zero, 0, nullptr, nullptr);
+  if (rc != CL_SUCCESS) return 0;
+
+  cl_kernel ker =
+      static_cast<cl_kernel>(use_u4 ? d.kernel_hi32 : d.kernel_hi32_u1);
+  int arg = 0;
+  rc = clSetKernelArg(ker, arg++, sizeof(cl_mem), &job_mem);
+  rc |= clSetKernelArg(ker, arg++, sizeof(cl_ulong), &start);
+  rc |= clSetKernelArg(ker, arg++, sizeof(cl_ulong), &count);
+  rc |= clSetKernelArg(ker, arg++, sizeof(cl_uint), &h0);
+  rc |= clSetKernelArg(ker, arg++, sizeof(cl_uint), &h1);
+  rc |= clSetKernelArg(ker, arg++, sizeof(cl_mem), &res_mem);
+  if (rc != CL_SUCCESS) return 0;
+
+  if (local == 0 || local > d.max_work_group) local = d.max_work_group ? std::min<size_t>(d.max_work_group, 256) : 64;
+  size_t global = static_cast<size_t>(d.compute_units) * local * (intensity ? intensity : 32);
+  if (global < local * 32) global = local * 32;
+  if (global > static_cast<size_t>(count)) global = (static_cast<size_t>(count) / local) * local;
+  if (global == 0) global = local;
+
+  auto enqueue = [&]() -> cl_int {
+    cl_int e =
+        clEnqueueNDRangeKernel(q, ker, 1, nullptr, &global, &local, 0, nullptr, nullptr);
+    if (e != CL_SUCCESS) {
+      e = clEnqueueNDRangeKernel(q, ker, 1, nullptr, &global, nullptr, 0, nullptr, nullptr);
+    }
+    return e;
+  };
+
+  // Warmup
+  if (enqueue() != CL_SUCCESS) return 0;
+  clFinish(q);
+  if (stop_flag.load()) return 0;
+
+  // Two timed runs — keep the better (reduces scheduler noise).
+  double best_mhs = 0;
+  for (int pass = 0; pass < 2; ++pass) {
+    if (stop_flag.load()) break;
+    clEnqueueWriteBuffer(q, res_mem, CL_FALSE, 0, sizeof(zero), &zero, 0, nullptr, nullptr);
+    const auto t0 = std::chrono::steady_clock::now();
+    if (enqueue() != CL_SUCCESS) return best_mhs;
+    clFinish(q);
+    const auto t1 = std::chrono::steady_clock::now();
+    const double sec = std::chrono::duration<double>(t1 - t0).count();
+    if (sec < 1e-6) continue;
+    const double mhs = (static_cast<double>(count) / sec) / 1e6;
+    if (mhs > best_mhs) best_mhs = mhs;
+  }
+  d.blob_on_device = false;  // invalidate cache after bench writes
+  return best_mhs;
+}
+
+bool OpenClBackend::load_tune_cache(const std::string& path) {
+  std::ifstream in(path);
+  if (!in) return false;
+  std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  // Minimal parser: look for blocks "name":"...","local":N,"intensity":N,"u4":true/false,"batch":N,"mhs":N
+  int matched = 0;
+  for (auto& dp : devices_) {
+    auto& d = *dp;
+    const std::string key = "\"name\":\"" + d.name + "\"";
+    size_t pos = content.find(key);
+    if (pos == std::string::npos) continue;
+    auto find_num = [&](const char* field) -> uint64_t {
+      const std::string pat = std::string("\"") + field + "\":";
+      size_t p = content.find(pat, pos);
+      if (p == std::string::npos || p > pos + 400) return 0;
+      p += pat.size();
+      return static_cast<uint64_t>(std::strtoull(content.c_str() + p, nullptr, 10));
+    };
+    auto find_bool = [&](const char* field) -> bool {
+      const std::string pat = std::string("\"") + field + "\":";
+      size_t p = content.find(pat, pos);
+      if (p == std::string::npos || p > pos + 400) return false;
+      p += pat.size();
+      return content.compare(p, 4, "true") == 0;
+    };
+    const uint64_t local = find_num("local");
+    const uint64_t intensity = find_num("intensity");
+    const uint64_t batch = find_num("batch");
+    if (local == 0 || intensity == 0 || batch == 0) continue;
+    d.tune.local = static_cast<size_t>(local);
+    d.tune.intensity = static_cast<unsigned>(intensity);
+    d.tune.use_u4 = find_bool("u4");
+    d.tune.batch = batch;
+    d.tune.mhs = static_cast<double>(find_num("mhs"));
+    // mhs may be float — try parse after "mhs":
+    {
+      const std::string pat = "\"mhs\":";
+      size_t p = content.find(pat, pos);
+      if (p != std::string::npos && p < pos + 400) {
+        d.tune.mhs = std::strtod(content.c_str() + p + pat.size(), nullptr);
+      }
+    }
+    d.tuned = true;
+    ++matched;
+    log_info("autotune cache hit gpu=" + d.name + " local=" + std::to_string(d.tune.local) +
+             " intensity=" + std::to_string(d.tune.intensity) +
+             " kernel=" + std::string(d.tune.use_u4 ? "u4" : "u1") +
+             " batch=" + std::to_string(d.tune.batch) +
+             " mhs=" + std::to_string(d.tune.mhs));
+  }
+  return matched > 0;
+}
+
+void OpenClBackend::save_tune_cache(const std::string& path) const {
+  std::ostringstream ss;
+  ss << "{\"devices\":[";
+  for (size_t i = 0; i < devices_.size(); ++i) {
+    const auto& d = *devices_[i];
+    if (i) ss << ",";
+    ss << "{\"name\":\"" << d.name << "\",\"local\":" << d.tune.local
+       << ",\"intensity\":" << d.tune.intensity << ",\"u4\":" << (d.tune.use_u4 ? "true" : "false")
+       << ",\"batch\":" << d.tune.batch << ",\"mhs\":" << d.tune.mhs << "}";
+  }
+  ss << "]}\n";
+  std::ofstream out(path);
+  if (!out) {
+    log_warn("autotune: cannot write cache " + path);
+    return;
+  }
+  out << ss.str();
+  log_info("autotune cache saved " + path);
+}
+
+void OpenClBackend::autotune(const PreparedJob& job, std::atomic<bool>& stop_flag,
+                             const std::string& cache_path, bool force,
+                             const std::vector<int>& only_devices) {
+  auto device_wanted = [&](int di) {
+    if (only_devices.empty()) return true;
+    for (int sel : only_devices)
+      if (sel == di) return true;
+    return false;
+  };
+
+  // Mark filtered-out GPUs as already tuned so cache/skip logic stays clean.
+  for (int di = 0; di < device_count(); ++di) {
+    if (!device_wanted(di)) devices_[static_cast<size_t>(di)]->tuned = true;
+  }
+
+  if (!force && !cache_path.empty() && load_tune_cache(cache_path)) {
+    bool all = true;
+    for (int di = 0; di < device_count(); ++di) {
+      if (!device_wanted(di)) continue;
+      if (!devices_[static_cast<size_t>(di)]->tuned) all = false;
+    }
+    if (all) {
+      log_info("autotune: all selected GPUs loaded from cache (" + cache_path + ")");
+      return;
+    }
+  }
+
+  // Coarse search first, then refine intensity around the winner.
+  // Target: ~1–3 minutes per GPU on RX 5700 XT class cards.
+  const size_t locals[] = {64, 128, 256};
+  const unsigned coarse_intensity[] = {16, 32, 64, 96, 128, 192};
+  const uint64_t batches[] = {1ull << 22, 1ull << 24, 1ull << 25, 1ull << 26, 1ull << 27};  // 4M..128M
+  const bool u4_opts[] = {false, true};
+
+  auto align_hi32 = [](uint64_t& start, uint64_t count) {
+    const uint64_t room = (uint64_t{1} << 32) - (start & 0xffffffffull);
+    if (room != 0 && room < count) start += room;
+  };
+
+  for (size_t di = 0; di < devices_.size(); ++di) {
+    if (stop_flag.load()) break;
+    if (!device_wanted(static_cast<int>(di))) continue;
+    auto& d = *devices_[di];
+    if (d.tuned && !force) continue;
+    if (force) d.tuned = false;
+
+    log_info("autotune start gpu[" + std::to_string(di) + "]=" + d.name +
+             " cu=" + std::to_string(d.compute_units) + " max_wg=" + std::to_string(d.max_work_group));
+
+    GpuTune best = d.tune;
+    best.mhs = 0;
+    uint64_t ctr = static_cast<uint64_t>(now_us());
+
+    const uint64_t phase1_batch = 1ull << 24;  // 16M
+
+    auto try_cfg = [&](size_t local, unsigned intensity, bool use_u4, uint64_t count) -> double {
+      if (stop_flag.load()) return 0;
+      if (local == 0 || local > d.max_work_group) return 0;
+      uint64_t start = ctr;
+      align_hi32(start, count);
+      ctr = start;
+      const double mhs = bench_launch(d, job, start, count, local, intensity, use_u4, stop_flag);
+      ctr += count;
+      return mhs;
+    };
+
+    // Phase 1: coarse local × intensity × kernel
+    for (bool use_u4 : u4_opts) {
+      for (size_t local : locals) {
+        if (local > d.max_work_group) continue;
+        for (unsigned intensity : coarse_intensity) {
+          const double mhs = try_cfg(local, intensity, use_u4, phase1_batch);
+          if (mhs <= 0) continue;
+          log_info("  try local=" + std::to_string(local) +
+                   " intensity=" + std::to_string(intensity) +
+                   " kernel=" + std::string(use_u4 ? "u4" : "u1") +
+                   " => " + std::to_string(mhs) + " MH/s");
+          if (mhs > best.mhs * 1.008) {
+            best.local = local;
+            best.intensity = intensity;
+            best.use_u4 = use_u4;
+            best.batch = phase1_batch;
+            best.mhs = mhs;
+          }
+        }
+      }
+    }
+
+    // Phase 1b: refine intensity around winner (±32 / ±16 steps).
+    if (best.mhs > 0) {
+      const unsigned base = best.intensity;
+      const unsigned refine[] = {
+          base > 48 ? base - 48 : 8,  base > 32 ? base - 32 : 8,  base > 16 ? base - 16 : 8,
+          base > 8 ? base - 8 : 8,    base + 8,                   base + 16,
+          base + 24,                  base + 32,                  base + 48,
+          base + 64};
+      for (unsigned intensity : refine) {
+        if (intensity < 8 || intensity > 384) continue;
+        if (intensity == best.intensity) continue;
+        const double mhs = try_cfg(best.local, intensity, best.use_u4, phase1_batch);
+        if (mhs <= 0) continue;
+        log_info("  refine intensity=" + std::to_string(intensity) +
+                 " => " + std::to_string(mhs) + " MH/s");
+        if (mhs > best.mhs * 1.005) {
+          best.intensity = intensity;
+          best.mhs = mhs;
+        }
+      }
+    }
+
+    // Phase 2: batch size with winning launch params.
+    if (best.mhs > 0) {
+      double best_batch_mhs = 0;
+      uint64_t best_batch = best.batch;
+      for (uint64_t batch : batches) {
+        const double mhs = try_cfg(best.local, best.intensity, best.use_u4, batch);
+        if (mhs <= 0) continue;
+        log_info("  try batch=" + std::to_string(batch) + " => " + std::to_string(mhs) + " MH/s");
+        if (best_batch_mhs <= 0 || mhs > best_batch_mhs * 1.01) {
+          best_batch_mhs = mhs;
+          best_batch = batch;
+        } else if (mhs >= best_batch_mhs * 0.99 && batch > best_batch) {
+          // Near-tie: prefer larger batch (less host overhead per hash).
+          best_batch = batch;
+          if (mhs > best_batch_mhs) best_batch_mhs = mhs;
+        }
+      }
+      if (best_batch_mhs > 0) {
+        best.batch = best_batch;
+        best.mhs = best_batch_mhs;
+      }
+    }
+
+    if (best.mhs <= 0) {
+      log_warn("autotune failed for " + d.name + " — keeping defaults");
+      d.tuned = true;
+      continue;
+    }
+    d.tune = best;
+    d.tuned = true;
+    d.last_mhs.store(best.mhs);
+    log_info("autotune best gpu=" + d.name + " local=" + std::to_string(best.local) +
+             " intensity=" + std::to_string(best.intensity) +
+             " kernel=" + std::string(best.use_u4 ? "u4" : "u1") +
+             " batch=" + std::to_string(best.batch) + " => " + std::to_string(best.mhs) + " MH/s");
+  }
+
+  if (!cache_path.empty()) save_tune_cache(cache_path);
 }
 
 }  // namespace oneminer

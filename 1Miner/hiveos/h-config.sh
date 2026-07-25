@@ -44,7 +44,7 @@ if [[ -n "$wallet" ]]; then
   cmd+=" --wallet $(printf '%q' "$wallet")"
 fi
 
-# Always AMD OpenCL.
+# Always AMD OpenCL. Autotune runs by default in the binary (per GPU).
 cmd+=" --amd-ocl"
 
 if [[ -n "$extra" ]]; then

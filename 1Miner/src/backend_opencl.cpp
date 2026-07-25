@@ -161,32 +161,13 @@ static_assert(sizeof(ResultBlobHost) == 48, "ResultBlobHost size");
 static unsigned normalize_unroll(unsigned u) {
   if (u >= 8) return 8;
   if (u >= 4) return 4;
+  if (u == 2) return 2;  // ilp2 kernel
   return 1;
 }
 
 static uint64_t align_count_to_unroll(uint64_t count, unsigned unroll) {
   unroll = normalize_unroll(unroll);
   return count - (count % unroll);
-}
-
-static double estimate_wpi(size_t local, unsigned intensity, unsigned cu, uint64_t count,
-                           unsigned unroll) {
-  unroll = normalize_unroll(unroll);
-  if (local == 0) local = 64;
-  uint64_t units = count / unroll;
-  if (units == 0) return 0;
-  size_t global;
-  if (intensity == 0) {
-    const size_t cap = static_cast<size_t>(cu) * local * 512u;
-    global = static_cast<size_t>(std::min(units, static_cast<uint64_t>(cap)));
-  } else {
-    global = static_cast<size_t>(cu) * local * intensity;
-  }
-  if (global > units) global = static_cast<size_t>(units);
-  if (global < local) global = local;
-  global = (global / local) * local;
-  if (global == 0) return 0;
-  return static_cast<double>(units) / static_cast<double>(global);
 }
 
 OpenClBackend::OpenClBackend() = default;
@@ -200,6 +181,7 @@ OpenClBackend::~OpenClBackend() {
     if (d->kernel_hi32_u1) clReleaseKernel(static_cast<cl_kernel>(d->kernel_hi32_u1));
     if (d->kernel_hi32) clReleaseKernel(static_cast<cl_kernel>(d->kernel_hi32));
     if (d->kernel_hi32_u8) clReleaseKernel(static_cast<cl_kernel>(d->kernel_hi32_u8));
+    if (d->kernel_hi32_ilp2) clReleaseKernel(static_cast<cl_kernel>(d->kernel_hi32_ilp2));
     if (d->kernel) clReleaseKernel(static_cast<cl_kernel>(d->kernel));
     if (d->program) clReleaseProgram(static_cast<cl_program>(d->program));
     if (d->queue) clReleaseCommandQueue(static_cast<cl_command_queue>(d->queue));
@@ -291,7 +273,12 @@ bool OpenClBackend::init(std::string& err) {
         log_warn(std::string("  clCreateContext failed for ") + name + " rc=" + std::to_string(rc));
         continue;
       }
-      cl_command_queue q = clCreateCommandQueue(ctx, dev, 0, &rc);
+      cl_command_queue q = clCreateCommandQueue(ctx, dev, CL_QUEUE_PROFILING_ENABLE, &rc);
+      if (rc != CL_SUCCESS) {
+        log_warn(std::string("  clCreateCommandQueue(profiling) failed for ") + name +
+                 " rc=" + std::to_string(rc) + " — retry without profiling");
+        q = clCreateCommandQueue(ctx, dev, 0, &rc);
+      }
       if (rc != CL_SUCCESS) {
         log_warn(std::string("  clCreateCommandQueue failed for ") + name + " rc=" + std::to_string(rc));
         clReleaseContext(ctx);
@@ -305,13 +292,31 @@ bool OpenClBackend::init(std::string& err) {
         clReleaseContext(ctx);
         continue;
       }
-      rc = clBuildProgram(prog, 1, &dev,
-                          "-cl-std=CL1.2 -cl-mad-enable -cl-no-signed-zeros "
-                          "-cl-uniform-work-group-size",
-                          nullptr, nullptr);
+
+      const char* opts_bitalign =
+          "-cl-std=CL1.2 -cl-mad-enable -cl-no-signed-zeros "
+          "-cl-uniform-work-group-size -DONE_MINER_BITALIGN=1";
+      const char* opts_portable =
+          "-cl-std=CL1.2 -cl-mad-enable -cl-no-signed-zeros "
+          "-cl-uniform-work-group-size";
+      const char* opts_portable_loose = "-cl-std=CL1.2 -cl-mad-enable -cl-no-signed-zeros";
+
+      bool used_bitalign = true;
+      rc = clBuildProgram(prog, 1, &dev, opts_bitalign, nullptr, nullptr);
       if (rc != CL_SUCCESS) {
-        rc = clBuildProgram(prog, 1, &dev, "-cl-std=CL1.2 -cl-mad-enable -cl-no-signed-zeros",
-                            nullptr, nullptr);
+        used_bitalign = false;
+        // Recreate program — some ICDs leave a failed build sticky.
+        clReleaseProgram(prog);
+        prog = clCreateProgramWithSource(ctx, 1, &src, &src_len, &rc);
+        if (rc != CL_SUCCESS) {
+          clReleaseCommandQueue(q);
+          clReleaseContext(ctx);
+          continue;
+        }
+        rc = clBuildProgram(prog, 1, &dev, opts_portable, nullptr, nullptr);
+        if (rc != CL_SUCCESS) {
+          rc = clBuildProgram(prog, 1, &dev, opts_portable_loose, nullptr, nullptr);
+        }
       }
       if (rc != CL_SUCCESS) {
         size_t log_size = 0;
@@ -325,6 +330,9 @@ bool OpenClBackend::init(std::string& err) {
         clReleaseContext(ctx);
         continue;
       }
+      log_info(std::string("  ROTR32 path: ") +
+               (used_bitalign ? "amd_bitalign (cl_amd_media_ops)" : "portable shift/or"));
+
       cl_kernel ker = clCreateKernel(prog, "mine_classic_fast", &rc);
       if (rc != CL_SUCCESS) {
         clReleaseProgram(prog);
@@ -359,12 +367,24 @@ bool OpenClBackend::init(std::string& err) {
         clReleaseContext(ctx);
         continue;
       }
+      cl_kernel ker_hi_ilp2 = clCreateKernel(prog, "mine_classic_hi32_ilp2", &rc);
+      if (rc != CL_SUCCESS) {
+        clReleaseKernel(ker_hi_u8);
+        clReleaseKernel(ker_hi_u1);
+        clReleaseKernel(ker_hi);
+        clReleaseKernel(ker);
+        clReleaseProgram(prog);
+        clReleaseCommandQueue(q);
+        clReleaseContext(ctx);
+        continue;
+      }
 
       JobBlobHost zjob{};
       ResultBlobHost zres{};
       cl_mem job_mem =
           clCreateBuffer(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(zjob), &zjob, &rc);
       if (rc != CL_SUCCESS || !job_mem) {
+        clReleaseKernel(ker_hi_ilp2);
         clReleaseKernel(ker_hi_u8);
         clReleaseKernel(ker_hi_u1);
         clReleaseKernel(ker_hi);
@@ -378,6 +398,7 @@ bool OpenClBackend::init(std::string& err) {
           clCreateBuffer(ctx, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(zres), &zres, &rc);
       if (rc != CL_SUCCESS || !res_mem) {
         clReleaseMemObject(job_mem);
+        clReleaseKernel(ker_hi_ilp2);
         clReleaseKernel(ker_hi_u8);
         clReleaseKernel(ker_hi_u1);
         clReleaseKernel(ker_hi);
@@ -392,6 +413,7 @@ bool OpenClBackend::init(std::string& err) {
       if (rc != CL_SUCCESS || !res_mem_b) {
         clReleaseMemObject(res_mem);
         clReleaseMemObject(job_mem);
+        clReleaseKernel(ker_hi_ilp2);
         clReleaseKernel(ker_hi_u8);
         clReleaseKernel(ker_hi_u1);
         clReleaseKernel(ker_hi);
@@ -417,6 +439,7 @@ bool OpenClBackend::init(std::string& err) {
       d->kernel_hi32 = ker_hi;
       d->kernel_hi32_u1 = ker_hi_u1;
       d->kernel_hi32_u8 = ker_hi_u8;
+      d->kernel_hi32_ilp2 = ker_hi_ilp2;
       d->job_mem = job_mem;
       d->res_mem = res_mem;
       d->res_mem_b = res_mem_b;
@@ -429,7 +452,7 @@ bool OpenClBackend::init(std::string& err) {
       d->tune.unroll = 1;
       d->tune.chunks = 1;
       d->tune.null_local = false;
-      d->tune.batch = 1ull << 26;  // 64M — good default before/without autotune
+      d->tune.batch = 1ull << 28;  // 256M — prefer long GPU runs
       devices_.push_back(std::move(d));
       log_info(std::string("AMD OpenCL GPU ready: ") + name + " cu=" + std::to_string(cu) +
                " max_wg=" + std::to_string(max_wg));
@@ -483,6 +506,7 @@ void* OpenClBackend::pick_kernel(Dev& d, unsigned unroll) const {
   unroll = normalize_unroll(unroll);
   if (unroll == 8) return d.kernel_hi32_u8;
   if (unroll == 4) return d.kernel_hi32;
+  if (unroll == 2) return d.kernel_hi32_ilp2;
   return d.kernel_hi32_u1;
 }
 
@@ -580,10 +604,11 @@ bool OpenClBackend::fill_hi32_launch(Dev& d, const PreparedJob& job, uint64_t st
 }
 
 bool OpenClBackend::enqueue_hi32(Dev& d, void* ker_v, uint64_t start, uint64_t count, void* res,
-                                 const GpuTune& cfg) {
+                                 const GpuTune& cfg, void** out_event) {
   if (!ker_v || !res || !d.hi.valid) return false;
   cl_command_queue q = static_cast<cl_command_queue>(d.queue);
   cl_kernel ker = static_cast<cl_kernel>(ker_v);
+  if (out_event) *out_event = nullptr;
 
   size_t local = cfg.local ? cfg.local : 64;
   if (local > d.max_work_group) local = d.max_work_group;
@@ -596,27 +621,48 @@ bool OpenClBackend::enqueue_hi32(Dev& d, void* ker_v, uint64_t start, uint64_t c
   uint64_t work = align_count_to_unroll(count, unroll);
   if (work == 0) return false;
 
+  // Precompute chunk sizes so we know which is last.
+  uint64_t chunk_sizes[64] = {};
+  unsigned nchunks = 0;
   uint64_t off = 0;
   for (unsigned c = 0; c < chunks; ++c) {
     uint64_t remain = work - off;
     uint64_t n = remain / (chunks - c);
     n = align_count_to_unroll(n, unroll);
     if (n == 0) continue;
+    chunk_sizes[nchunks++] = n;
+    off += n;
+  }
+  if (nchunks == 0) return false;
 
+  off = 0;
+  for (unsigned c = 0; c < nchunks; ++c) {
+    const uint64_t n = chunk_sizes[c];
     const uint64_t chunk_start = start + off;
     size_t global = calc_global(d, local, cfg.intensity, n, unroll);
 
     if (set_scalar_hi32_args(ker, d.hi, chunk_start, n, res) != CL_SUCCESS) return false;
 
     const size_t* local_ptr = cfg.null_local ? nullptr : &local;
-    cl_int rc = clEnqueueNDRangeKernel(q, ker, 1, nullptr, &global, local_ptr, 0, nullptr, nullptr);
+    const bool want_ev = out_event && (c + 1 == nchunks);
+    cl_event ev = nullptr;
+    cl_event* ev_ptr = want_ev ? &ev : nullptr;
+    cl_int rc = clEnqueueNDRangeKernel(q, ker, 1, nullptr, &global, local_ptr, 0, nullptr, ev_ptr);
     if (rc != CL_SUCCESS && !cfg.null_local) {
-      rc = clEnqueueNDRangeKernel(q, ker, 1, nullptr, &global, nullptr, 0, nullptr, nullptr);
+      if (ev) {
+        clReleaseEvent(ev);
+        ev = nullptr;
+      }
+      rc = clEnqueueNDRangeKernel(q, ker, 1, nullptr, &global, nullptr, 0, nullptr, ev_ptr);
     }
-    if (rc != CL_SUCCESS) return false;
+    if (rc != CL_SUCCESS) {
+      if (ev) clReleaseEvent(ev);
+      return false;
+    }
+    if (want_ev && ev) *out_event = ev;
     off += n;
   }
-  return off > 0;
+  return true;
 }
 
 bool OpenClBackend::apply_tune_cache(const std::string& path) {
@@ -708,10 +754,42 @@ std::vector<ShareCandidate> OpenClBackend::scan(int device_index, uint64_t start
       return found;
     }
 
-    const auto t0 = std::chrono::steady_clock::now();
-    if (!enqueue_hi32(d, ker, start, count, res_cur, d.tune)) {
+    // Keep GPU busy via ping-pong. Sample MH/s every 4th launch with profiling/clFinish;
+    // other launches only enqueue + read previous result (no finish on current).
+    const bool sample = ((d.scan_launches + 1u) % 4u) == 0u;
+    void* ev_out = nullptr;
+    const auto tw0 = std::chrono::steady_clock::now();
+    if (!enqueue_hi32(d, ker, start, count, res_cur, d.tune, sample ? &ev_out : nullptr)) {
       log_warn(std::string("enqueue_hi32 failed on ") + d.name);
       return found;
+    }
+    cl_event ker_ev = static_cast<cl_event>(ev_out);
+    ++d.scan_launches;
+
+    if (sample) {
+      clFinish(q);
+      double sec = 0;
+      if (ker_ev) {
+        cl_ulong t0 = 0, t1 = 0;
+        if (clGetEventProfilingInfo(ker_ev, CL_PROFILING_COMMAND_START, sizeof(t0), &t0, nullptr) ==
+                CL_SUCCESS &&
+            clGetEventProfilingInfo(ker_ev, CL_PROFILING_COMMAND_END, sizeof(t1), &t1, nullptr) ==
+                CL_SUCCESS &&
+            t1 > t0) {
+          sec = static_cast<double>(t1 - t0) * 1e-9;
+          const unsigned ch = d.tune.chunks ? d.tune.chunks : 1;
+          // Event covers last chunk only; scale when multi-chunk (equal-ish splits).
+          if (ch > 1) sec *= static_cast<double>(ch);
+        }
+        clReleaseEvent(ker_ev);
+        ker_ev = nullptr;
+      }
+      if (sec <= 1e-9) {
+        sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - tw0).count();
+      }
+      update_hashrate(count, sec);
+    } else {
+      d.total_hashes.fetch_add(count);
     }
 
     if (d.res_pending) {
@@ -724,9 +802,6 @@ std::vector<ShareCandidate> OpenClBackend::scan(int device_index, uint64_t start
         process_result(result);
       }
     }
-
-    const auto t1 = std::chrono::steady_clock::now();
-    update_hashrate(count, std::chrono::duration<double>(t1 - t0).count());
 
     d.res_ping ^= 1;
     d.res_pending = true;
@@ -886,7 +961,7 @@ bool OpenClBackend::load_tune_cache(const std::string& path) {
     d.tune.intensity = intensity;
     {
       const uint64_t un = find_num("unroll");
-      if (un == 1 || un == 4 || un == 8) {
+      if (un == 1 || un == 2 || un == 4 || un == 8) {
         d.tune.unroll = static_cast<unsigned>(un);
       } else if (find_bool("u4")) {
         d.tune.unroll = 4;  // legacy cache
@@ -920,7 +995,7 @@ bool OpenClBackend::load_tune_cache(const std::string& path) {
 
 void OpenClBackend::save_tune_cache(const std::string& path) const {
   std::ostringstream ss;
-  ss << "{\"version\":15,\"devices\":[";
+  ss << "{\"version\":16,\"devices\":[";
   for (size_t i = 0; i < devices_.size(); ++i) {
     const auto& d = *devices_[i];
     if (i) ss << ",";
@@ -943,14 +1018,17 @@ void OpenClBackend::save_tune_cache(const std::string& path) const {
 void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
                                  std::atomic<bool>& stop_flag) {
   log_info("autotune start gpu[" + std::to_string(di) + "]=" + d.name +
-           " cu=" + std::to_string(d.compute_units) + " max_wg=" + std::to_string(d.max_work_group));
+           " cu=" + std::to_string(d.compute_units) + " max_wg=" + std::to_string(d.max_work_group) +
+           " — target max throughput (goal ≥5 GH/s per card)");
 
   const size_t locals[] = {32, 64, 128, 256};
-  const unsigned unrolls[] = {1, 4, 8};
+  const unsigned unrolls[] = {1, 2, 4, 8};  // 2 = ilp2 kernel
   const unsigned target_wpi[] = {64, 128, 256, 512, 1024, 2048};
-  const uint64_t batches[] = {1ull << 23, 1ull << 24, 1ull << 25, 1ull << 26, 1ull << 27, 1ull << 28};
+  // Fixed intensity grid (low + high) in addition to WPI-derived.
+  const unsigned intensity_grid[] = {1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 0};
+  const uint64_t batches[] = {1ull << 26, 1ull << 27, 1ull << 28, 1ull << 29, 1ull << 30};
   const unsigned chunk_opts[] = {1, 2, 4};
-  const uint64_t probe_batch = 1ull << 25;  // 32M
+  const uint64_t probe_batch = 1ull << 26;  // 64M probe
 
   auto align_hi32 = [](uint64_t& start, uint64_t count) {
     const uint64_t room = (uint64_t{1} << 32) - (start & 0xffffffffull);
@@ -964,8 +1042,12 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
     if (cfg.local == 0 || cfg.local > d.max_work_group) return 0;
     if (cfg.chunks == 0) cfg.chunks = 1;
     cfg.unroll = normalize_unroll(cfg.unroll);
+    // Cap batch to remaining hi32 room after align.
     uint64_t start = ctr;
     align_hi32(start, count);
+    const uint64_t room = (uint64_t{1} << 32) - (start & 0xffffffffull);
+    if (count > room) count = align_count_to_unroll(room, cfg.unroll);
+    if (count == 0) return 0;
     ctr = start;
     const double mhs = bench_launch(d, job, start, count, cfg, stop_flag);
     ctr += count;
@@ -975,29 +1057,16 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
   struct Cand {
     GpuTune cfg{};
     double mhs = 0;
-    double wpi = 0;
   };
   std::vector<Cand> cands;
-  cands.reserve(128);
+  cands.reserve(256);
 
-  auto cfg_wpi = [&](const GpuTune& cfg, uint64_t count) {
-    return estimate_wpi(cfg.local, cfg.intensity, d.compute_units, count, cfg.unroll);
-  };
+  // Pure max MH/s — no WPI preference.
+  auto better_than = [](const Cand& a, const Cand& b) { return a.mhs > b.mhs; };
 
-  auto better_than = [](const Cand& a, const Cand& b) {
-    // Prefer higher MH/s; within 1% prefer WPI >= 64.
-    if (a.mhs > b.mhs * 1.01) return true;
-    if (b.mhs > a.mhs * 1.01) return false;
-    const bool aw = a.wpi >= 64.0;
-    const bool bw = b.wpi >= 64.0;
-    if (aw != bw) return aw;
-    return a.mhs > b.mhs;
-  };
-
-  auto consider = [&](const GpuTune& cfg, double mhs, uint64_t count) {
+  auto consider = [&](const GpuTune& cfg, double mhs) {
     if (mhs <= 0) return;
-    Cand c{cfg, mhs, cfg_wpi(cfg, count)};
-    cands.push_back(c);
+    cands.push_back(Cand{cfg, mhs});
   };
 
   // Phase 0: clock warm-up
@@ -1012,11 +1081,13 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
     try_cfg(warm, 1ull << 24);
   }
 
-  // Phase 1: work-per-WI targeting (local × unroll × WPI → intensity)
+  // Phase 1: unroll × local × (WPI-derived + fixed intensity grid)
   for (unsigned unroll : unrolls) {
     if (stop_flag.load()) break;
     for (size_t local : locals) {
       if (local > d.max_work_group) continue;
+
+      // WPI-derived intensities
       for (unsigned wpi : target_wpi) {
         if (stop_flag.load()) break;
         const uint64_t units = probe_batch / unroll;
@@ -1025,6 +1096,7 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
         if (denom > 0) {
           const uint64_t iv = units / denom;
           intensity = static_cast<unsigned>(iv > 0 ? iv : 1);
+          if (intensity > 512) intensity = 512;
         }
         GpuTune cfg{};
         cfg.local = local;
@@ -1038,16 +1110,19 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
           log_info("  try local=" + std::to_string(local) +
                    " intensity=" + std::to_string(intensity) +
                    " unroll=" + std::to_string(unroll) +
+                   (unroll == 2 ? " (ilp2)" : "") +
                    " wpi~" + std::to_string(wpi) +
                    " => " + std::to_string(mhs) + " MH/s");
-          consider(cfg, mhs, probe_batch);
+          consider(cfg, mhs);
         }
       }
-      // Also try full-span
-      {
+
+      // Fixed intensity grid (low and high) + full-span
+      for (unsigned intensity : intensity_grid) {
+        if (stop_flag.load()) break;
         GpuTune cfg{};
         cfg.local = local;
-        cfg.intensity = 0;
+        cfg.intensity = intensity;
         cfg.unroll = unroll;
         cfg.chunks = 1;
         cfg.null_local = false;
@@ -1055,9 +1130,11 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
         const double mhs = try_cfg(cfg, probe_batch);
         if (mhs > 0) {
           log_info("  try local=" + std::to_string(local) +
-                   " intensity=0 unroll=" + std::to_string(unroll) +
+                   " intensity=" + std::to_string(intensity) +
+                   " unroll=" + std::to_string(unroll) +
+                   (unroll == 2 ? " (ilp2)" : "") +
                    " => " + std::to_string(mhs) + " MH/s");
-          consider(cfg, mhs, probe_batch);
+          consider(cfg, mhs);
         }
       }
     }
@@ -1071,7 +1148,7 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
 
   std::sort(cands.begin(), cands.end(),
             [&](const Cand& a, const Cand& b) { return better_than(a, b); });
-  // Keep top 5 unique-ish configs
+  // Keep top 5 unique configs
   std::vector<Cand> top;
   for (const auto& c : cands) {
     bool dup = false;
@@ -1091,13 +1168,13 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
     const unsigned bi = base.cfg.intensity;
     std::vector<unsigned> refine;
     if (bi == 0) {
-      refine = {0, 1, 2, 4, 8, 12, 16, 24, 32};
+      refine = {0, 1, 2, 4, 8, 12, 16, 24, 32, 64, 128, 256, 512};
     } else {
-      for (int delta : {-16, -8, -4, -2, -1, 1, 2, 4, 8, 16}) {
+      for (int delta : {-64, -32, -16, -8, -4, -2, -1, 1, 2, 4, 8, 16, 32, 64}) {
         const int v = static_cast<int>(bi) + delta;
         if (v >= 1 && v <= 512) refine.push_back(static_cast<unsigned>(v));
       }
-      refine.push_back(0);  // also try full-span near a good point
+      refine.push_back(0);
     }
     std::vector<size_t> loc_try = {base.cfg.local};
     for (size_t local : locals) {
@@ -1115,7 +1192,7 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
         cfg.null_local = false;
         const double mhs = try_cfg(cfg, probe_batch);
         if (mhs <= 0) continue;
-        Cand c{cfg, mhs, cfg_wpi(cfg, probe_batch)};
+        Cand c{cfg, mhs};
         if (better_than(c, best)) {
           log_info("  refine local=" + std::to_string(local) +
                    " intensity=" + std::to_string(intensity) +
@@ -1126,13 +1203,12 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
       }
     }
 
-    // ICD-chosen local size
     {
       GpuTune cfg = best.cfg;
       cfg.null_local = true;
       const double mhs = try_cfg(cfg, probe_batch);
       if (mhs > 0) {
-        Cand c{cfg, mhs, cfg_wpi(cfg, probe_batch)};
+        Cand c{cfg, mhs};
         if (better_than(c, best)) {
           log_info("  refine null_local => " + std::to_string(mhs) + " MH/s");
           best = c;
@@ -1141,7 +1217,7 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
     }
   }
 
-  // Phase 3: multi-chunk launches with winning params
+  // Phase 3: multi-chunk launches — pick absolute highest MH/s
   {
     Cand chunk_best = best;
     for (unsigned chunks : chunk_opts) {
@@ -1151,17 +1227,13 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
       const double mhs = try_cfg(cfg, probe_batch);
       if (mhs <= 0) continue;
       log_info("  try chunks=" + std::to_string(chunks) + " => " + std::to_string(mhs) + " MH/s");
-      Cand c{cfg, mhs, cfg_wpi(cfg, probe_batch)};
-      if (better_than(c, chunk_best)) {
-        chunk_best = c;
-      } else if (mhs >= chunk_best.mhs * 0.995 && chunks < chunk_best.cfg.chunks) {
-        chunk_best = c;
-      }
+      Cand c{cfg, mhs};
+      if (better_than(c, chunk_best)) chunk_best = c;
     }
     best = chunk_best;
   }
 
-  // Phase 4: batch size (host overhead vs GPU fill)
+  // Phase 4: batch size 64M .. 1G — absolute highest MH/s
   {
     Cand batch_best = best;
     batch_best.mhs = 0;
@@ -1172,23 +1244,25 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
       const double mhs = try_cfg(cfg, batch);
       if (mhs <= 0) continue;
       log_info("  try batch=" + std::to_string(batch) + " => " + std::to_string(mhs) + " MH/s");
-      Cand c{cfg, mhs, cfg_wpi(cfg, batch)};
-      if (batch_best.mhs <= 0 || better_than(c, batch_best)) {
-        batch_best = c;
-      } else if (mhs >= batch_best.mhs * 0.992 && batch > batch_best.cfg.batch) {
-        batch_best = c;
-      }
+      Cand c{cfg, mhs};
+      if (batch_best.mhs <= 0 || better_than(c, batch_best)) batch_best = c;
     }
     if (batch_best.mhs > 0) best = batch_best;
   }
 
-  // Phase 5: final verification — longer run, median already inside bench
+  // Phase 5: long verify at 512M–1G
   {
     GpuTune cfg = best.cfg;
-    const double mhs = try_cfg(cfg, cfg.batch ? cfg.batch : (1ull << 26));
+    uint64_t verify = cfg.batch;
+    if (verify < (1ull << 29)) verify = 1ull << 29;  // at least 512M
+    if (verify > (1ull << 30)) verify = 1ull << 30;
+    cfg.batch = verify;
+    log_info("  long verify batch=" + std::to_string(verify) + " …");
+    const double mhs = try_cfg(cfg, verify);
     if (mhs > 0) {
       best.mhs = mhs;
-      best.wpi = cfg_wpi(cfg, cfg.batch ? cfg.batch : (1ull << 26));
+      best.cfg.batch = verify;
+      log_info("  verify => " + std::to_string(mhs) + " MH/s");
     }
   }
 
@@ -1196,13 +1270,15 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
   d.tune = best.cfg;
   d.tuned = true;
   d.last_mhs.store(best.mhs);
+  const double ghs = best.mhs / 1000.0;
   log_info("autotune best gpu=" + d.name + " local=" + std::to_string(best.cfg.local) +
            " intensity=" + std::to_string(best.cfg.intensity) +
            " unroll=" + std::to_string(best.cfg.unroll) +
+           (best.cfg.unroll == 2 ? " (ilp2)" : "") +
            " chunks=" + std::to_string(best.cfg.chunks) +
            " null_local=" + std::string(best.cfg.null_local ? "1" : "0") +
            " batch=" + std::to_string(best.cfg.batch) + " => " + std::to_string(best.mhs) +
-           " MH/s");
+           " MH/s (" + std::to_string(ghs) + " GH/s)");
 }
 
 void OpenClBackend::autotune(const PreparedJob& job, std::atomic<bool>& stop_flag,

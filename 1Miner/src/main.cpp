@@ -9,6 +9,7 @@
 #include <csignal>
 #include <cstring>
 #include <functional>
+#include <algorithm>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -19,7 +20,7 @@ namespace {
 std::atomic<bool> g_stop{false};
 void on_signal(int) { g_stop = true; }
 
-constexpr const char* kVersion = "1.0.15";
+constexpr const char* kVersion = "1.0.16";
 }  // namespace
 
 static void usage(const char* argv0) {
@@ -40,7 +41,7 @@ static void usage(const char* argv0) {
       << "  --autotune                        Per-GPU OpenCL tune (default: on)\n"
       << "  --no-autotune                     Skip autotune; use defaults / cache\n"
       << "  --autotune-force                  Retune even if cache exists\n"
-      << "  --autotune-cache PATH             Default: /tmp/1miner-autotune-1.0.15.json\n"
+      << "  --autotune-cache PATH             Default: /tmp/1miner-autotune-1.0.16.json\n"
       << "  --help\n\n"
       << "HiveOS example:\n"
       << "  ./1miner --pool nl.rabbitminer.cc:1901 --wallet WALLET.worker\n"
@@ -55,7 +56,7 @@ int main(int argc, char** argv) {
   std::string worker;
   std::string nonce_mode_s = "classic";
   std::string stats_file = "/tmp/saseul-miner-stats.json";
-  std::string autotune_cache = "/tmp/1miner-autotune-1.0.15.json";
+  std::string autotune_cache = "/tmp/1miner-autotune-1.0.16.json";
   bool do_autotune = true;
   bool force_autotune = false;
   std::vector<int> devices;
@@ -406,16 +407,30 @@ int main(int argc, char** argv) {
           prep_ts = ts;
           prep_at = now_st;
         }
-        uint64_t this_batch = ocl->tuned_batch(i);
-        if (this_batch < (1ull << 20)) this_batch = 1ull << 24;
-        // Keep power-of-two-ish batches aligned for u4 kernel (count % 4 == 0).
-        this_batch &= ~uint64_t{3};
-        if (this_batch == 0) this_batch = 1ull << 24;
-        uint64_t start = counter.fetch_add(this_batch);
+        uint64_t tuned = ocl->tuned_batch(i);
+        if (tuned < (uint64_t{1} << 20)) tuned = uint64_t{1} << 28;
+        // Fill as much of the hi32 window as practical (up to ~1<<30) so the GPU
+        // runs long without host round-trips. Floor at max(tuned, 256M).
+        uint64_t start = counter.load();
         const uint64_t room = (uint64_t{1} << 32) - (start & 0xffffffffull);
-        if (room != 0 && room < this_batch) {
-          this_batch = room & ~uint64_t{3};
-          if (this_batch == 0) continue;
+        uint64_t this_batch = std::max(tuned, uint64_t{1} << 28);
+        if (this_batch > (uint64_t{1} << 30)) this_batch = uint64_t{1} << 30;
+        this_batch = std::min(this_batch, room);
+        // Align to unroll 8 (also satisfies 1/2/4).
+        this_batch &= ~uint64_t{7};
+        if (this_batch == 0) {
+          // Remnant too small — skip to next hi32 window.
+          if (room > 0) counter.fetch_add(room);
+          continue;
+        }
+        start = counter.fetch_add(this_batch);
+        // After fetch_add, re-clamp if another thread crossed the window (rare).
+        {
+          const uint64_t room2 = (uint64_t{1} << 32) - (start & 0xffffffffull);
+          if (room2 < this_batch) {
+            this_batch = room2 & ~uint64_t{7};
+            if (this_batch == 0) continue;
+          }
         }
         auto shares = ocl->scan(i, start, this_batch, prep, g_stop);
         if (!shares.empty()) {

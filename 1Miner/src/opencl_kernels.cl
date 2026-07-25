@@ -2,9 +2,16 @@
 // Message (ASCII hex): previous_blockhash(78) + header_hash(64) + nonce(16) = 158 bytes.
 //
 // Hot path: mine_classic_hi32_* — precomputed rounds 0..4, zero-pad schedule specialize,
-// immediate K constants, early d0 reject. Portable ROTR/Ch/Maj (no amd_bitalign).
+// immediate K constants, early d0 reject. Optional amd_bitalign ROTR via ONE_MINER_BITALIGN.
 
 #pragma OPENCL EXTENSION cl_khr_global_int32_base_atomics : enable
+
+#if ONE_MINER_BITALIGN
+#pragma OPENCL EXTENSION cl_amd_media_ops : enable
+#define ROTR32(x,n) amd_bitalign((uint)(x), (uint)(x), (uint)(n))
+#else
+#define ROTR32(x,n) (((uint)(x) >> ((uint)(n) & 31u)) | ((uint)(x) << ((32u - ((uint)(n) & 31u)) & 31u)))
+#endif
 
 // HEX LUT kept for fallback full-counter encode; hot path uses arithmetic nibble→ASCII.
 __constant ushort HEX_PAIRS[256] = {
@@ -26,7 +33,6 @@ __constant ushort HEX_PAIRS[256] = {
     0x6630u,0x6631u,0x6632u,0x6633u,0x6634u,0x6635u,0x6636u,0x6637u,0x6638u,0x6639u,0x6661u,0x6662u,0x6663u,0x6664u,0x6665u,0x6666u
 };
 
-#define ROTR32(x,n) (((uint)(x) >> ((uint)(n) & 31u)) | ((uint)(x) << ((32u - ((uint)(n) & 31u)) & 31u)))
 // bitselect(a,b,c) = (c&b)|(~c&a) → Ch(x,y,z)=bitselect(z,y,x)  (fast on AMD GCN/RDNA)
 #define Ch(x,y,z) bitselect((uint)(z), (uint)(y), (uint)(x))
 #define Maj(x,y,z) ((((uint)(x)) & ((uint)(y))) | (((uint)(z)) & (((uint)(x)) | ((uint)(y)))))
@@ -287,6 +293,18 @@ static inline int digest_le_target_claim(__global ResultBlob* result, ulong ctr,
   } \
 } while (0)
 
+// Like TRY_HASH_R5 but never returns (for dual-nonce ILP — less WI divergence).
+#define TRY_HASH_R5_CLAIM(CTR, W5, W6, W7) do { \
+  uint a = wr0, b = wr1, c = wr2, d = wr3, e = wr4, f = wr5, g = wr6, h = wr7; \
+  SHA256_FROM_R5(fw0, fw1, fw2, fw3, fw4, (W5), (W6), (W7)); \
+  const uint d0 = mid0 + a; \
+  if (d0 <= t0) { \
+    const uint d1 = mid1 + b, d2 = mid2 + c, d3 = mid3 + d; \
+    const uint d4 = mid4 + e, d5 = mid5 + f, d6 = mid6 + g, d7 = mid7 + h; \
+    (void)digest_le_target_claim(result, (CTR), t0,t1,t2,t3,t4,t5,t6,t7, d0,d1,d2,d3,d4,d5,d6,d7); \
+  } \
+} while (0)
+
 // Hot path: all job state as scalar args (SGPR/private — no JobBlob global loads).
 #define HI32_SCALAR_ARGS \
     uint mid0, uint mid1, uint mid2, uint mid3, uint mid4, uint mid5, uint mid6, uint mid7, \
@@ -346,6 +364,30 @@ __kernel void mine_classic_hi32_u8(HI32_SCALAR_ARGS) {
                   ((hx2 & 0xFFFFu) << 16) | ((hx3 >> 16) & 0xFFFFu),
                   ((hx3 & 0xFFFFu) << 16) | 0x00008000u);
     }
+  }
+}
+
+// Dual-nonce ILP: each WI hashes gid*2 and gid*2+1 without early return between them
+// (claim-only) so both digests always run — less divergence, better latency hiding.
+// Host guarantees count % 2 == 0. Autotune unroll==2 selects this kernel.
+__attribute__((work_group_size_hint(64, 1, 1)))
+__kernel void mine_classic_hi32_ilp2(HI32_SCALAR_ARGS) {
+  const ulong gid = (ulong)get_global_id(0);
+  const ulong stride = (ulong)get_global_size(0);
+  for (ulong idx = gid * 2ul; idx < count; idx += stride * 2ul) {
+    const ulong ctr0 = start_counter + idx;
+    const ulong ctr1 = ctr0 + 1ul;
+    uint hx2a, hx3a, hx2b, hx3b;
+    encode_lo32_words((uint)ctr0, &hx2a, &hx3a);
+    encode_lo32_words((uint)ctr1, &hx2b, &hx3b);
+    const uint w5a = (h1_lo << 16) | ((hx2a >> 16) & 0xFFFFu);
+    const uint w6a = ((hx2a & 0xFFFFu) << 16) | ((hx3a >> 16) & 0xFFFFu);
+    const uint w7a = ((hx3a & 0xFFFFu) << 16) | 0x00008000u;
+    const uint w5b = (h1_lo << 16) | ((hx2b >> 16) & 0xFFFFu);
+    const uint w6b = ((hx2b & 0xFFFFu) << 16) | ((hx3b >> 16) & 0xFFFFu);
+    const uint w7b = ((hx3b & 0xFFFFu) << 16) | 0x00008000u;
+    TRY_HASH_R5_CLAIM(ctr0, w5a, w6a, w7a);
+    TRY_HASH_R5_CLAIM(ctr1, w5b, w6b, w7b);
   }
 }
 

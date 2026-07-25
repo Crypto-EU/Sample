@@ -70,10 +70,10 @@ struct JobBlobHost {
 struct GpuTune {
   size_t local = 64;
   unsigned intensity = 8;   // global ≈ cu * local * intensity; 0 = full-span
-  unsigned unroll = 1;      // 1, 4, or 8 contiguous nonces per WI
+  unsigned unroll = 1;      // 1, 2 (ilp2), 4, or 8 contiguous nonces per WI
   unsigned chunks = 1;
   bool null_local = false;
-  uint64_t batch = 1ull << 26;
+  uint64_t batch = 1ull << 28;
   double mhs = 0;
 };
 
@@ -115,11 +115,13 @@ class OpenClBackend {
     void* kernel_hi32_u1 = nullptr;  // scalar u1
     void* kernel_hi32 = nullptr;     // scalar u4
     void* kernel_hi32_u8 = nullptr;  // scalar u8
+    void* kernel_hi32_ilp2 = nullptr;  // dual-nonce ILP (unroll==2)
     void* job_mem = nullptr;         // only for fast fallback
     void* res_mem = nullptr;
     void* res_mem_b = nullptr;       // ping-pong
     int res_ping = 0;
     bool res_pending = false;
+    unsigned scan_launches = 0;      // for every-Nth profiling sample
     Hi32Launch hi{};
     std::string name;
     size_t max_work_group = 256;
@@ -144,7 +146,7 @@ class OpenClBackend {
   bool fill_hi32_launch(Dev& d, const PreparedJob& job, uint64_t start, uint64_t count,
                         JobBlobHost* out_blob);
   bool enqueue_hi32(Dev& d, void* ker, uint64_t start, uint64_t count, void* res,
-                    const GpuTune& cfg);
+                    const GpuTune& cfg, void** out_event = nullptr);
   static int set_scalar_hi32_args(void* ker, const Hi32Launch& L, uint64_t start, uint64_t count,
                                   void* res);
   bool load_tune_cache(const std::string& path);

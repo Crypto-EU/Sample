@@ -19,7 +19,7 @@ namespace {
 std::atomic<bool> g_stop{false};
 void on_signal(int) { g_stop = true; }
 
-constexpr const char* kVersion = "1.0.14";
+constexpr const char* kVersion = "1.0.15";
 }  // namespace
 
 static void usage(const char* argv0) {
@@ -40,7 +40,7 @@ static void usage(const char* argv0) {
       << "  --autotune                        Per-GPU OpenCL tune (default: on)\n"
       << "  --no-autotune                     Skip autotune; use defaults / cache\n"
       << "  --autotune-force                  Retune even if cache exists\n"
-      << "  --autotune-cache PATH             Default: /tmp/1miner-autotune-1.0.14.json\n"
+      << "  --autotune-cache PATH             Default: /tmp/1miner-autotune-1.0.15.json\n"
       << "  --help\n\n"
       << "HiveOS example:\n"
       << "  ./1miner --pool nl.rabbitminer.cc:1901 --wallet WALLET.worker\n"
@@ -55,7 +55,7 @@ int main(int argc, char** argv) {
   std::string worker;
   std::string nonce_mode_s = "classic";
   std::string stats_file = "/tmp/saseul-miner-stats.json";
-  std::string autotune_cache = "/tmp/1miner-autotune-1.0.14.json";
+  std::string autotune_cache = "/tmp/1miner-autotune-1.0.15.json";
   bool do_autotune = true;
   bool force_autotune = false;
   std::vector<int> devices;
@@ -322,7 +322,7 @@ int main(int argc, char** argv) {
         log_info("gpu[" + std::to_string(i) + "]=" + ocl->device_name(i) +
                  " tune local=" + std::to_string(t.local) +
                  " intensity=" + std::to_string(t.intensity) +
-                 " kernel=" + std::string(t.use_u4 ? "u4" : "u1") +
+                 " unroll=" + std::to_string(t.unroll) +
                  " chunks=" + std::to_string(t.chunks) +
                  " null_local=" + std::string(t.null_local ? "1" : "0") +
                  " batch=" + std::to_string(t.batch) +

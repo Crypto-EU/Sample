@@ -27,7 +27,7 @@ HiveOS-Archiv:
 
 ```bash
 1Miner/scripts/package-hive.sh
-# → 1Miner/releases/1miner-hive-1.0.14.tar.gz
+# → 1Miner/releases/1miner-hive-1.0.15.tar.gz
 ```
 
 ## Beispiele
@@ -40,7 +40,7 @@ HiveOS-Archiv:
 
 ## Autotune (pro GPU)
 
-Beim Start misst 1Miner **jede AMD-Karte parallel**: local, intensity (inkl. full-span), u1/u4, multi-chunk launches, null-local, batch. Median aus 3 Messungen. Cache: `/tmp/1miner-autotune-1.0.14.json`.
+Beim Start misst 1Miner **jede AMD-Karte parallel**: local, unroll (1/4/8), work-per-WI intensity, multi-chunk launches, null-local, batch. Median aus 3 Messungen. Cache: `/tmp/1miner-autotune-1.0.15.json`.
 
 | Flag | Wirkung |
 |------|---------|
@@ -57,7 +57,7 @@ HiveOS Extra config zum Retune: `--autotune-force`
 - **Miner:** Custom  
 - **Name:** `1miner-hive`  
 - **Installation URL:**  
-  `https://raw.githubusercontent.com/Crypto-EU/Sample/cursor/1miner-amd-hiveos-3705/1Miner/releases/1miner-hive-1.0.14.tar.gz`  
+  `https://raw.githubusercontent.com/Crypto-EU/Sample/cursor/1miner-amd-hiveos-3705/1Miner/releases/1miner-hive-1.0.15.tar.gz`  
 - **Pool URL:** z. B. `nl.rabbitminer.cc:1901`  
 - **Wallet template:** `%WAL%.%WORKER_NAME%`  
 - **Extra config:** `--autotune-force` (einmalig nach Update)
@@ -71,6 +71,6 @@ HiveOS Extra config zum Retune: `--autotune-force`
 
 ## Hinweis
 
-1Miner v1.0.14: aggressiveres Autotune (parallel, Top-5-Refine, chunks, full-span, Median-Messung) + kein Found-Polling im Kernel.
+1Miner v1.0.15: scalar-arg hi32 kernels (u1/u4/u8), ping-pong result buffers, WPI-targeted autotune.
 
 Ohne AMD-OpenCL-Gerät beendet 1Miner mit Fehler. NVIDIA- und CPU-Backends sind absichtlich deaktiviert.

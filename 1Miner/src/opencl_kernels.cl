@@ -27,7 +27,8 @@ __constant ushort HEX_PAIRS[256] = {
 };
 
 #define ROTR32(x,n) (((uint)(x) >> ((uint)(n) & 31u)) | ((uint)(x) << ((32u - ((uint)(n) & 31u)) & 31u)))
-#define Ch(x,y,z) (((uint)(z)) ^ (((uint)(x)) & (((uint)(y)) ^ ((uint)(z)))))
+// bitselect(a,b,c) = (c&b)|(~c&a) → Ch(x,y,z)=bitselect(z,y,x)  (fast on AMD GCN/RDNA)
+#define Ch(x,y,z) bitselect((uint)(z), (uint)(y), (uint)(x))
 #define Maj(x,y,z) ((((uint)(x)) & ((uint)(y))) | (((uint)(z)) & (((uint)(x)) | ((uint)(y)))))
 #define BSIG0(x) (ROTR32((x), 2u) ^ ROTR32((x), 13u) ^ ROTR32((x), 22u))
 #define BSIG1(x) (ROTR32((x), 6u) ^ ROTR32((x), 11u) ^ ROTR32((x), 25u))
@@ -286,32 +287,19 @@ static inline int digest_le_target_claim(__global ResultBlob* result, ulong ctr,
   } \
 } while (0)
 
+// Hot path: all job state as scalar args (SGPR/private — no JobBlob global loads).
+#define HI32_SCALAR_ARGS \
+    uint mid0, uint mid1, uint mid2, uint mid3, uint mid4, uint mid5, uint mid6, uint mid7, \
+    uint wr0, uint wr1, uint wr2, uint wr3, uint wr4, uint wr5, uint wr6, uint wr7, \
+    uint t0, uint t1, uint t2, uint t3, uint t4, uint t5, uint t6, uint t7, \
+    uint fw0, uint fw1, uint fw2, uint fw3, uint fw4, uint h1_lo, \
+    ulong start_counter, ulong count, \
+    __global ResultBlob* result
+
 __attribute__((work_group_size_hint(64, 1, 1)))
-__kernel void mine_classic_hi32_u1(__global const JobBlob* job,
-                                   ulong start_counter,
-                                   ulong count,
-                                   uint h0,
-                                   uint h1,
-                                   __global ResultBlob* result) {
+__kernel void mine_classic_hi32_u1(HI32_SCALAR_ARGS) {
   const ulong gid = (ulong)get_global_id(0);
   const ulong stride = (ulong)get_global_size(0);
-
-  const uint mid0 = job->midstate[0], mid1 = job->midstate[1], mid2 = job->midstate[2], mid3 = job->midstate[3];
-  const uint mid4 = job->midstate[4], mid5 = job->midstate[5], mid6 = job->midstate[6], mid7 = job->midstate[7];
-  const uint t0 = job->target[0], t1 = job->target[1], t2 = job->target[2], t3 = job->target[3];
-  const uint t4 = job->target[4], t5 = job->target[5], t6 = job->target[6], t7 = job->target[7];
-  const uint wr0 = job->work_after_r4[0], wr1 = job->work_after_r4[1], wr2 = job->work_after_r4[2], wr3 = job->work_after_r4[3];
-  const uint wr4 = job->work_after_r4[4], wr5 = job->work_after_r4[5], wr6 = job->work_after_r4[6], wr7 = job->work_after_r4[7];
-
-  const uint b3 = job->block0[3];
-  const uint fw0 = job->block0[0];
-  const uint fw1 = job->block0[1];
-  const uint fw2 = job->block0[2];
-  const uint fw3 = (b3 & 0xFFFF0000u) | ((h0 >> 16) & 0xFFFFu);
-  const uint fw4 = ((h0 & 0xFFFFu) << 16) | ((h1 >> 16) & 0xFFFFu);
-  const uint h1_lo = (h1 & 0xFFFFu);
-
-  // Rare-share path: do not poll result->found mid-loop (global volatile kills RDNA).
   for (ulong idx = gid; idx < count; idx += stride) {
     const ulong ctr = start_counter + idx;
     uint hx2, hx3;
@@ -323,35 +311,33 @@ __kernel void mine_classic_hi32_u1(__global const JobBlob* job,
   }
 }
 
-// Host guarantees count % 4 == 0 for this kernel (power-of-two batches / alignment).
+// Host guarantees count % 4 == 0.
 __attribute__((work_group_size_hint(64, 1, 1)))
-__kernel void mine_classic_hi32(__global const JobBlob* job,
-                                ulong start_counter,
-                                ulong count,
-                                uint h0,
-                                uint h1,
-                                __global ResultBlob* result) {
+__kernel void mine_classic_hi32(HI32_SCALAR_ARGS) {
   const ulong gid = (ulong)get_global_id(0);
   const ulong stride = (ulong)get_global_size(0);
-
-  const uint mid0 = job->midstate[0], mid1 = job->midstate[1], mid2 = job->midstate[2], mid3 = job->midstate[3];
-  const uint mid4 = job->midstate[4], mid5 = job->midstate[5], mid6 = job->midstate[6], mid7 = job->midstate[7];
-  const uint t0 = job->target[0], t1 = job->target[1], t2 = job->target[2], t3 = job->target[3];
-  const uint t4 = job->target[4], t5 = job->target[5], t6 = job->target[6], t7 = job->target[7];
-  const uint wr0 = job->work_after_r4[0], wr1 = job->work_after_r4[1], wr2 = job->work_after_r4[2], wr3 = job->work_after_r4[3];
-  const uint wr4 = job->work_after_r4[4], wr5 = job->work_after_r4[5], wr6 = job->work_after_r4[6], wr7 = job->work_after_r4[7];
-
-  const uint b3 = job->block0[3];
-  const uint fw0 = job->block0[0];
-  const uint fw1 = job->block0[1];
-  const uint fw2 = job->block0[2];
-  const uint fw3 = (b3 & 0xFFFF0000u) | ((h0 >> 16) & 0xFFFFu);
-  const uint fw4 = ((h0 & 0xFFFFu) << 16) | ((h1 >> 16) & 0xFFFFu);
-  const uint h1_lo = (h1 & 0xFFFFu);
-
   for (ulong idx = gid * 4ul; idx < count; idx += stride * 4ul) {
 #pragma unroll
     for (uint lane = 0u; lane < 4u; ++lane) {
+      const ulong ctr = start_counter + idx + (ulong)lane;
+      uint hx2, hx3;
+      encode_lo32_words((uint)ctr, &hx2, &hx3);
+      TRY_HASH_R5(ctr,
+                  (h1_lo << 16) | ((hx2 >> 16) & 0xFFFFu),
+                  ((hx2 & 0xFFFFu) << 16) | ((hx3 >> 16) & 0xFFFFu),
+                  ((hx3 & 0xFFFFu) << 16) | 0x00008000u);
+    }
+  }
+}
+
+// Host guarantees count % 8 == 0.
+__attribute__((work_group_size_hint(64, 1, 1)))
+__kernel void mine_classic_hi32_u8(HI32_SCALAR_ARGS) {
+  const ulong gid = (ulong)get_global_id(0);
+  const ulong stride = (ulong)get_global_size(0);
+  for (ulong idx = gid * 8ul; idx < count; idx += stride * 8ul) {
+#pragma unroll
+    for (uint lane = 0u; lane < 8u; ++lane) {
       const ulong ctr = start_counter + idx + (ulong)lane;
       uint hx2, hx3;
       encode_lo32_words((uint)ctr, &hx2, &hx3);

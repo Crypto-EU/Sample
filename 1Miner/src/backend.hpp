@@ -57,14 +57,32 @@ class CpuBackend {
 };
 
 #ifdef ONE_MINER_HAS_OPENCL
+struct JobBlobHost {
+  uint32_t midstate[8];
+  uint32_t block0[16];
+  uint32_t target[8];
+  uint32_t work_after_r2[8];
+  uint32_t work_after_r4[8];
+  uint32_t flags;
+  uint32_t _pad;
+};
+
 struct GpuTune {
   size_t local = 64;
-  unsigned intensity = 64;  // global ≈ cu * local * intensity; 0 = full-span mode
-  bool use_u4 = false;      // false = hi32_u1, true = hi32 (4-way)
-  unsigned chunks = 1;      // split one batch into N back-to-back kernel launches
-  bool null_local = false;  // let the ICD pick local size
+  unsigned intensity = 8;   // global ≈ cu * local * intensity; 0 = full-span
+  unsigned unroll = 1;      // 1, 4, or 8 contiguous nonces per WI
+  unsigned chunks = 1;
+  bool null_local = false;
   uint64_t batch = 1ull << 26;
   double mhs = 0;
+};
+
+struct Hi32Launch {
+  uint32_t mid[8]{};
+  uint32_t wr[8]{};
+  uint32_t tgt[8]{};
+  uint32_t fw0 = 0, fw1 = 0, fw2 = 0, fw3 = 0, fw4 = 0, h1_lo = 0;
+  bool valid = false;
 };
 
 class OpenClBackend {
@@ -78,8 +96,6 @@ class OpenClBackend {
   uint64_t tuned_batch(int i) const;
   bool apply_tune_cache(const std::string& path);
 
-  // Benchmark launch params per GPU; writes cache file when path non-empty.
-  // If only_devices is non-empty, only those indices are tuned.
   void autotune(const PreparedJob& job, std::atomic<bool>& stop_flag,
                 const std::string& cache_path, bool force,
                 const std::vector<int>& only_devices = {});
@@ -95,11 +111,16 @@ class OpenClBackend {
     void* context = nullptr;
     void* queue = nullptr;
     void* program = nullptr;
-    void* kernel = nullptr;         // mine_classic_fast
-    void* kernel_hi32 = nullptr;    // mine_classic_hi32 (u4)
-    void* kernel_hi32_u1 = nullptr; // mine_classic_hi32_u1
-    void* job_mem = nullptr;
+    void* kernel = nullptr;          // mine_classic_fast (JobBlob fallback)
+    void* kernel_hi32_u1 = nullptr;  // scalar u1
+    void* kernel_hi32 = nullptr;     // scalar u4
+    void* kernel_hi32_u8 = nullptr;  // scalar u8
+    void* job_mem = nullptr;         // only for fast fallback
     void* res_mem = nullptr;
+    void* res_mem_b = nullptr;       // ping-pong
+    int res_ping = 0;
+    bool res_pending = false;
+    Hi32Launch hi{};
     std::string name;
     size_t max_work_group = 256;
     unsigned compute_units = 1;
@@ -115,13 +136,17 @@ class OpenClBackend {
   std::vector<std::unique_ptr<Dev>> devices_;
   std::string kernel_source_;
 
-  // Timed kernel run; returns MH/s (0 on failure). Does not update share stats.
   double bench_launch(Dev& d, const PreparedJob& job, uint64_t start, uint64_t count,
                       const GpuTune& cfg, std::atomic<bool>& stop_flag);
   static size_t calc_global(const Dev& d, size_t local, unsigned intensity, uint64_t count,
-                            bool use_u4);
-  bool enqueue_hi32(Dev& d, void* ker, uint64_t start, uint64_t count, uint32_t h0, uint32_t h1,
+                            unsigned unroll);
+  void* pick_kernel(Dev& d, unsigned unroll) const;
+  bool fill_hi32_launch(Dev& d, const PreparedJob& job, uint64_t start, uint64_t count,
+                        JobBlobHost* out_blob);
+  bool enqueue_hi32(Dev& d, void* ker, uint64_t start, uint64_t count, void* res,
                     const GpuTune& cfg);
+  static int set_scalar_hi32_args(void* ker, const Hi32Launch& L, uint64_t start, uint64_t count,
+                                  void* res);
   bool load_tune_cache(const std::string& path);
   void save_tune_cache(const std::string& path) const;
   void autotune_one(Dev& d, int di, const PreparedJob& job, std::atomic<bool>& stop_flag);

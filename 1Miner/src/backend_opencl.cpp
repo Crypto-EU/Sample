@@ -163,9 +163,11 @@ struct ResultBlobHost {
 
 static_assert(sizeof(JobBlobHost) == 200, "JobBlobHost size");
 static_assert(sizeof(ResultBlobHost) == 48, "ResultBlobHost size");
+static_assert(sizeof(Hi32BlobHost) == 160, "Hi32BlobHost size");
 
 static unsigned normalize_unroll(unsigned u) {
   if (u == 14) return 14;  // sequential mine_classic_hi32 (u4)
+  if (u == 3) return 3;    // hasher-like constant blob u32
   if (u >= 8) return 8;
   if (u >= 4) return 4;  // ilp4
   if (u == 2) return 2;  // ilp2
@@ -175,16 +177,19 @@ static unsigned normalize_unroll(unsigned u) {
 // Work-item nonce stride / alignment period.
 static unsigned unroll_period(unsigned u) {
   u = normalize_unroll(u);
-  return (u == 14) ? 4u : u;
+  if (u == 14) return 4u;
+  if (u == 3) return 1u;
+  return u;
 }
 
 static const char* unroll_tag(unsigned u) {
   u = normalize_unroll(u);
   if (u == 2) return " (ilp2)";
+  if (u == 3) return " (c_u32/hasher)";
   if (u == 4) return " (ilp4)";
   if (u == 8) return " (u8)";
   if (u == 14) return " (u4)";
-  return "";
+  return " (u1)";
 }
 
 static uint64_t align_count_to_unroll(uint64_t count, unsigned unroll) {
@@ -198,6 +203,7 @@ OpenClBackend::~OpenClBackend() {
   for (auto& d : devices_) {
     if (!d) continue;
     if (d->job_mem) clReleaseMemObject(static_cast<cl_mem>(d->job_mem));
+    if (d->hi_mem) clReleaseMemObject(static_cast<cl_mem>(d->hi_mem));
     if (d->res_mem) clReleaseMemObject(static_cast<cl_mem>(d->res_mem));
     if (d->res_mem_b) clReleaseMemObject(static_cast<cl_mem>(d->res_mem_b));
     if (d->kernel_hi32_u1) clReleaseKernel(static_cast<cl_kernel>(d->kernel_hi32_u1));
@@ -205,6 +211,7 @@ OpenClBackend::~OpenClBackend() {
     if (d->kernel_hi32_u8) clReleaseKernel(static_cast<cl_kernel>(d->kernel_hi32_u8));
     if (d->kernel_hi32_ilp2) clReleaseKernel(static_cast<cl_kernel>(d->kernel_hi32_ilp2));
     if (d->kernel_hi32_ilp4) clReleaseKernel(static_cast<cl_kernel>(d->kernel_hi32_ilp4));
+    if (d->kernel_hi32_c_u32) clReleaseKernel(static_cast<cl_kernel>(d->kernel_hi32_c_u32));
     if (d->kernel) clReleaseKernel(static_cast<cl_kernel>(d->kernel));
     if (d->program) clReleaseProgram(static_cast<cl_program>(d->program));
     if (d->queue) clReleaseCommandQueue(static_cast<cl_command_queue>(d->queue));
@@ -413,12 +420,43 @@ bool OpenClBackend::init(std::string& err) {
         clReleaseContext(ctx);
         continue;
       }
+      cl_kernel ker_hi_c_u32 = clCreateKernel(prog, "mine_classic_hi32_c_u32", &rc);
+      if (rc != CL_SUCCESS) {
+        clReleaseKernel(ker_hi_ilp4);
+        clReleaseKernel(ker_hi_ilp2);
+        clReleaseKernel(ker_hi_u8);
+        clReleaseKernel(ker_hi_u1);
+        clReleaseKernel(ker_hi);
+        clReleaseKernel(ker);
+        clReleaseProgram(prog);
+        clReleaseCommandQueue(q);
+        clReleaseContext(ctx);
+        continue;
+      }
 
       JobBlobHost zjob{};
+      Hi32BlobHost zhi{};
       ResultBlobHost zres{};
       cl_mem job_mem =
           clCreateBuffer(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(zjob), &zjob, &rc);
       if (rc != CL_SUCCESS || !job_mem) {
+        clReleaseKernel(ker_hi_c_u32);
+        clReleaseKernel(ker_hi_ilp4);
+        clReleaseKernel(ker_hi_ilp2);
+        clReleaseKernel(ker_hi_u8);
+        clReleaseKernel(ker_hi_u1);
+        clReleaseKernel(ker_hi);
+        clReleaseKernel(ker);
+        clReleaseProgram(prog);
+        clReleaseCommandQueue(q);
+        clReleaseContext(ctx);
+        continue;
+      }
+      cl_mem hi_mem =
+          clCreateBuffer(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(zhi), &zhi, &rc);
+      if (rc != CL_SUCCESS || !hi_mem) {
+        clReleaseMemObject(job_mem);
+        clReleaseKernel(ker_hi_c_u32);
         clReleaseKernel(ker_hi_ilp4);
         clReleaseKernel(ker_hi_ilp2);
         clReleaseKernel(ker_hi_u8);
@@ -433,7 +471,9 @@ bool OpenClBackend::init(std::string& err) {
       cl_mem res_mem =
           clCreateBuffer(ctx, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(zres), &zres, &rc);
       if (rc != CL_SUCCESS || !res_mem) {
+        clReleaseMemObject(hi_mem);
         clReleaseMemObject(job_mem);
+        clReleaseKernel(ker_hi_c_u32);
         clReleaseKernel(ker_hi_ilp4);
         clReleaseKernel(ker_hi_ilp2);
         clReleaseKernel(ker_hi_u8);
@@ -449,7 +489,9 @@ bool OpenClBackend::init(std::string& err) {
           clCreateBuffer(ctx, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(zres), &zres, &rc);
       if (rc != CL_SUCCESS || !res_mem_b) {
         clReleaseMemObject(res_mem);
+        clReleaseMemObject(hi_mem);
         clReleaseMemObject(job_mem);
+        clReleaseKernel(ker_hi_c_u32);
         clReleaseKernel(ker_hi_ilp4);
         clReleaseKernel(ker_hi_ilp2);
         clReleaseKernel(ker_hi_u8);
@@ -463,7 +505,7 @@ bool OpenClBackend::init(std::string& err) {
       }
 
       size_t max_wg = 256;
-      clGetKernelWorkGroupInfo(ker_hi_u1, dev, CL_KERNEL_WORK_GROUP_SIZE, sizeof(max_wg), &max_wg,
+      clGetKernelWorkGroupInfo(ker_hi_c_u32, dev, CL_KERNEL_WORK_GROUP_SIZE, sizeof(max_wg), &max_wg,
                                nullptr);
       cl_uint cu = 0;
       clGetDeviceInfo(dev, CL_DEVICE_MAX_COMPUTE_UNITS, sizeof(cu), &cu, nullptr);
@@ -479,19 +521,22 @@ bool OpenClBackend::init(std::string& err) {
       d->kernel_hi32_u8 = ker_hi_u8;
       d->kernel_hi32_ilp2 = ker_hi_ilp2;
       d->kernel_hi32_ilp4 = ker_hi_ilp4;
+      d->kernel_hi32_c_u32 = ker_hi_c_u32;
       d->job_mem = job_mem;
+      d->hi_mem = hi_mem;
       d->res_mem = res_mem;
       d->res_mem_b = res_mem_b;
       d->name = name;
       d->max_work_group = max_wg ? max_wg : 256;
       d->compute_units = cu ? cu : 1;
-      d->tune.local = 64;
-      if (d->tune.local > d->max_work_group) d->tune.local = d->max_work_group;
-      d->tune.intensity = 8;
-      d->tune.unroll = 1;
+      // hasher-like defaults: threads=256, blocks≈CU*16, batch=128M
+      d->tune.local = std::min<size_t>(256, d->max_work_group);
+      if (d->tune.local == 0) d->tune.local = 64;
+      d->tune.intensity = 16;
+      d->tune.unroll = 3;
       d->tune.chunks = 1;
       d->tune.null_local = false;
-      d->tune.batch = 1ull << 28;  // 256M — prefer long GPU runs
+      d->tune.batch = 1ull << 27;
       devices_.push_back(std::move(d));
       log_info(std::string("AMD OpenCL GPU ready: ") + name + " cu=" + std::to_string(cu) +
                " max_wg=" + std::to_string(max_wg));
@@ -546,8 +591,27 @@ void* OpenClBackend::pick_kernel(Dev& d, unsigned unroll) const {
   if (unroll == 8) return d.kernel_hi32_u8;
   if (unroll == 14) return d.kernel_hi32;       // sequential u4
   if (unroll == 4) return d.kernel_hi32_ilp4;   // claim-only ILP4
+  if (unroll == 3) return d.kernel_hi32_c_u32;  // hasher-like constant blob
   if (unroll == 2) return d.kernel_hi32_ilp2;
   return d.kernel_hi32_u1;
+}
+
+bool OpenClBackend::is_const_blob_kernel(unsigned unroll) const {
+  return normalize_unroll(unroll) == 3;
+}
+
+int OpenClBackend::set_const_hi32_args(void* ker_v, void* hi_mem_v, uint64_t start, uint64_t count,
+                                       void* res) {
+  cl_kernel ker = static_cast<cl_kernel>(ker_v);
+  cl_mem hi_mem = static_cast<cl_mem>(hi_mem_v);
+  cl_mem res_mem = static_cast<cl_mem>(res);
+  int arg = 0;
+  cl_int rc = CL_SUCCESS;
+  rc |= clSetKernelArg(ker, arg++, sizeof(cl_mem), &hi_mem);
+  rc |= clSetKernelArg(ker, arg++, sizeof(cl_ulong), &start);
+  rc |= clSetKernelArg(ker, arg++, sizeof(cl_ulong), &count);
+  rc |= clSetKernelArg(ker, arg++, sizeof(cl_mem), &res_mem);
+  return static_cast<int>(rc);
 }
 
 int OpenClBackend::set_scalar_hi32_args(void* ker_v, const Hi32Launch& L, uint64_t start,
@@ -671,6 +735,14 @@ bool OpenClBackend::fill_hi32_launch(Dev& d, const PreparedJob& job, uint64_t st
   d.hi.pre_s21 = ssig1(d.hi.pre_w3);
   d.hi.valid = true;
 
+  // Upload packed constants for hasher-like c_u32 kernel.
+  if (d.hi_mem) {
+    Hi32BlobHost packed = d.hi.to_blob();
+    cl_command_queue q = static_cast<cl_command_queue>(d.queue);
+    clEnqueueWriteBuffer(q, static_cast<cl_mem>(d.hi_mem), CL_FALSE, 0, sizeof(packed), &packed, 0,
+                         nullptr, nullptr);
+  }
+
   if (out_blob) *out_blob = blob;
   return true;
 }
@@ -682,7 +754,7 @@ bool OpenClBackend::enqueue_hi32(Dev& d, void* ker_v, uint64_t start, uint64_t c
   cl_kernel ker = static_cast<cl_kernel>(ker_v);
   if (out_event) *out_event = nullptr;
 
-  size_t local = cfg.local ? cfg.local : 64;
+  size_t local = cfg.local ? cfg.local : 256;
   if (local > d.max_work_group) local = d.max_work_group;
   if (local == 0) local = 64;
 
@@ -713,7 +785,12 @@ bool OpenClBackend::enqueue_hi32(Dev& d, void* ker_v, uint64_t start, uint64_t c
     const uint64_t chunk_start = start + off;
     size_t global = calc_global(d, local, cfg.intensity, n, unroll);
 
-    if (set_scalar_hi32_args(ker, d.hi, chunk_start, n, res) != CL_SUCCESS) return false;
+    if (is_const_blob_kernel(unroll)) {
+      if (!d.hi_mem) return false;
+      if (set_const_hi32_args(ker, d.hi_mem, chunk_start, n, res) != CL_SUCCESS) return false;
+    } else {
+      if (set_scalar_hi32_args(ker, d.hi, chunk_start, n, res) != CL_SUCCESS) return false;
+    }
 
     const size_t* local_ptr = cfg.null_local ? nullptr : &local;
     const bool want_ev = out_event && (c + 1 == nchunks);
@@ -1038,12 +1115,12 @@ bool OpenClBackend::load_tune_cache(const std::string& path) {
     d.tune.intensity = intensity;
     {
       const uint64_t un = find_num("unroll");
-      if (un == 1 || un == 2 || un == 4 || un == 8 || un == 14) {
+      if (un == 1 || un == 2 || un == 3 || un == 4 || un == 8 || un == 14) {
         d.tune.unroll = static_cast<unsigned>(un);
       } else if (find_bool("u4")) {
         d.tune.unroll = 14;  // legacy sequential u4
       } else {
-        d.tune.unroll = 1;
+        d.tune.unroll = 3;  // hasher-like default
       }
     }
     d.tune.null_local = find_bool("null_local");
@@ -1072,7 +1149,7 @@ bool OpenClBackend::load_tune_cache(const std::string& path) {
 
 void OpenClBackend::save_tune_cache(const std::string& path) const {
   std::ostringstream ss;
-  ss << "{\"version\":19,\"devices\":[";
+  ss << "{\"version\":20,\"devices\":[";
   for (size_t i = 0; i < devices_.size(); ++i) {
     const auto& d = *devices_[i];
     if (i) ss << ",";
@@ -1094,32 +1171,36 @@ void OpenClBackend::save_tune_cache(const std::string& path) const {
 
 void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
                                  std::atomic<bool>& stop_flag) {
-  // Deep / precise autotune. Longer is intentional — goal ≥ 3.5 GH/s per card when silicon allows.
-  constexpr double kTargetMhs = 3500.0;  // 3.5 GH/s
+  // Hasher-aligned tune: threads(=local) × blocks(=CU*intensity) × batch × ocl variant(unroll).
+  // hasher 5.2 defaults: threads=256, blocks=1024, batch=16M+, autotune ~30s+ grids.
+  // Observed hasher ~3.4 GH/s/card — target that.
+  constexpr double kTargetMhs = 3400.0;
   constexpr double kTargetGhs = kTargetMhs / 1000.0;
 
-  log_info("autotune DEEP gpu[" + std::to_string(di) + "]=" + d.name +
+  log_info("autotune HASHER-STYLE gpu[" + std::to_string(di) + "]=" + d.name +
            " cu=" + std::to_string(d.compute_units) + " max_wg=" + std::to_string(d.max_work_group) +
-           " — target ≥ " + std::to_string(kTargetGhs) + " GH/s (precise, may take long)");
+           " — target ~" + std::to_string(kTargetGhs) + " GH/s (blocks×threads×batch like hasher 5.2)");
 
+  // hasher threads grid (local size), filtered by max_wg
   std::vector<size_t> locals;
-  for (size_t L : {16ull, 32ull, 48ull, 64ull, 96ull, 128ull, 160ull, 192ull, 224ull, 256ull}) {
+  for (size_t L : {256ull, 128ull, 192ull, 64ull, 384ull, 512ull, 96ull, 160ull, 224ull, 32ull}) {
     if (L <= d.max_work_group) locals.push_back(L);
   }
   if (locals.empty()) locals.push_back(std::min<size_t>(64, d.max_work_group));
 
-  // 1=u1, 2=ilp2, 4=ilp4, 14=seq u4, 8=u8
-  const unsigned unrolls[] = {1, 2, 4, 14, 8};
-  const unsigned target_wpi[] = {32, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3072};
-  const unsigned intensity_grid[] = {1,  2,  3,  4,  5,  6,  8,  10, 12, 14, 16, 20, 24, 28, 32,
-                                     40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
-                                     384, 448, 512, 0};
-  const uint64_t batches[] = {1ull << 26, 1ull << 27, 3ull << 27, 1ull << 28, 3ull << 28,
-                              1ull << 29, 3ull << 29, 1ull << 30};
-  const unsigned chunk_opts[] = {1, 2, 3, 4, 6, 8};
-  const uint64_t probe_batch = 1ull << 27;   // 128M coarse probe (more stable than 64M)
-  const uint64_t fine_batch = 1ull << 28;    // 256M fine refine
-  const uint64_t verify_batch = 1ull << 30;  // 1G final verify
+  // Prefer hasher-like c_u32 first, then other kernels.
+  const unsigned unrolls[] = {3, 1, 2, 4, 14, 8};
+  // hasher CU multipliers → intensity in our model (global = CU * local * intensity)
+  const unsigned block_mults[] = {2, 4, 6, 8, 12, 16, 24, 32, 48, 64};
+  // absolute block counts (hasher also tries fixed blocks) → intensity ≈ blocks/CU
+  const unsigned abs_blocks[] = {256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096};
+  // hasher batch grid
+  const uint64_t batches[] = {1ull << 24, 1ull << 25, 1ull << 26, 1ull << 27,
+                              1ull << 28, 1ull << 29, 1ull << 30};
+  const unsigned chunk_opts[] = {1, 2, 4};
+  const uint64_t probe_batch = 1ull << 26;  // 64M probe (hasher starts 16–64M)
+  const uint64_t fine_batch = 1ull << 27;   // 128M
+  const uint64_t verify_batch = 1ull << 29; // 512M verify
 
   auto align_hi32 = [](uint64_t& start, uint64_t count) {
     const uint64_t room = (uint64_t{1} << 32) - (start & 0xffffffffull);
@@ -1149,15 +1230,13 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
     double mhs = 0;
   };
   std::vector<Cand> cands;
-  cands.reserve(1024);
+  cands.reserve(512);
 
   auto better_than = [](const Cand& a, const Cand& b) { return a.mhs > b.mhs; };
-
   auto same_shape = [](const GpuTune& a, const GpuTune& b) {
     return a.local == b.local && a.intensity == b.intensity && a.unroll == b.unroll &&
            a.chunks == b.chunks && a.null_local == b.null_local;
   };
-
   auto consider = [&](const GpuTune& cfg, double mhs) {
     if (mhs <= 0) return;
     for (auto& c : cands) {
@@ -1174,7 +1253,6 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
     copy.mhs = mhs;
     cands.push_back(Cand{copy, mhs});
   };
-
   auto top_unique = [&](size_t n) {
     std::sort(cands.begin(), cands.end(),
               [&](const Cand& a, const Cand& b) { return better_than(a, b); });
@@ -1192,70 +1270,78 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
     return top;
   };
 
-  // Phase 0: long clock / power warm-up (stabilize before measuring).
+  auto intensity_from_blocks = [&](unsigned blocks) -> unsigned {
+    const unsigned cu = d.compute_units ? d.compute_units : 1;
+    unsigned iv = blocks / cu;
+    if (iv == 0) iv = 1;
+    if (iv > 512) iv = 512;
+    return iv;
+  };
+
+  // Phase 0: warm clocks (hasher does timed trials after brief warm)
   {
-    GpuTune warm = d.tune;
-    warm.local = std::min<size_t>(64, d.max_work_group);
+    GpuTune warm{};
+    warm.local = std::min<size_t>(256, d.max_work_group);
     warm.intensity = 16;
-    warm.unroll = 1;
+    warm.unroll = 3;
     warm.chunks = 1;
     warm.null_local = false;
-    log_info("  warm-up clocks …");
-    for (int i = 0; i < 4 && !stop_flag.load(); ++i) {
-      try_cfg(warm, 1ull << 26, 1, 0);  // single timed = effectively burn-in
-    }
+    log_info("  warm-up …");
+    for (int i = 0; i < 3 && !stop_flag.load(); ++i) try_cfg(warm, 1ull << 25, 1, 0);
   }
 
-  // Phase 1: coarse — all unroll × local × (WPI + dense intensity)
-  log_info("  phase1 coarse scan (probe=" + std::to_string(probe_batch) + ") …");
+  // Phase 1: hasher primary grid — unroll × threads × CU-mult (+ abs blocks)
+  log_info("  phase1 hasher grid (probe=" + std::to_string(probe_batch) + ") …");
   for (unsigned unroll : unrolls) {
     if (stop_flag.load()) break;
     for (size_t local : locals) {
       if (stop_flag.load()) break;
-
-      for (unsigned wpi : target_wpi) {
+      for (unsigned mult : block_mults) {
         if (stop_flag.load()) break;
-        const uint64_t units = probe_batch / unroll_period(unroll);
-        const uint64_t denom = static_cast<uint64_t>(wpi) * d.compute_units * local;
-        unsigned intensity = 1;
-        if (denom > 0) {
-          const uint64_t iv = units / denom;
-          intensity = static_cast<unsigned>(iv > 0 ? iv : 1);
-          if (intensity > 512) intensity = 512;
-        }
         GpuTune cfg{};
         cfg.local = local;
-        cfg.intensity = intensity;
+        cfg.intensity = mult;  // = hasher blocks / CU
         cfg.unroll = unroll;
         cfg.chunks = 1;
         cfg.null_local = false;
         cfg.batch = probe_batch;
         const double mhs = try_cfg(cfg, probe_batch, 3, 1);
         if (mhs > 0) {
-          log_info("  try local=" + std::to_string(local) + " intensity=" +
-                   std::to_string(intensity) + " unroll=" + std::to_string(unroll) +
-                   unroll_tag(unroll) + " wpi~" + std::to_string(wpi) + " => " +
-                   std::to_string(mhs) + " MH/s");
-          consider(cfg, mhs);
-        }
-      }
-
-      for (unsigned intensity : intensity_grid) {
-        if (stop_flag.load()) break;
-        GpuTune cfg{};
-        cfg.local = local;
-        cfg.intensity = intensity;
-        cfg.unroll = unroll;
-        cfg.chunks = 1;
-        cfg.null_local = false;
-        cfg.batch = probe_batch;
-        const double mhs = try_cfg(cfg, probe_batch, 3, 1);
-        if (mhs > 0) {
-          log_info("  try local=" + std::to_string(local) + " intensity=" +
-                   std::to_string(intensity) + " unroll=" + std::to_string(unroll) +
+          const unsigned blocks = mult * d.compute_units;
+          log_info("  try threads=" + std::to_string(local) + " blocks~" + std::to_string(blocks) +
+                   " (×" + std::to_string(mult) + " CU) unroll=" + std::to_string(unroll) +
                    unroll_tag(unroll) + " => " + std::to_string(mhs) + " MH/s");
           consider(cfg, mhs);
         }
+      }
+      for (unsigned blocks : abs_blocks) {
+        if (stop_flag.load()) break;
+        GpuTune cfg{};
+        cfg.local = local;
+        cfg.intensity = intensity_from_blocks(blocks);
+        cfg.unroll = unroll;
+        cfg.chunks = 1;
+        cfg.null_local = false;
+        cfg.batch = probe_batch;
+        const double mhs = try_cfg(cfg, probe_batch, 3, 1);
+        if (mhs > 0) {
+          log_info("  try threads=" + std::to_string(local) + " blocks=" + std::to_string(blocks) +
+                   " intensity=" + std::to_string(cfg.intensity) + " unroll=" +
+                   std::to_string(unroll) + unroll_tag(unroll) + " => " + std::to_string(mhs) +
+                   " MH/s");
+          consider(cfg, mhs);
+        }
+      }
+      // full-span
+      {
+        GpuTune cfg{};
+        cfg.local = local;
+        cfg.intensity = 0;
+        cfg.unroll = unroll;
+        cfg.chunks = 1;
+        cfg.batch = probe_batch;
+        const double mhs = try_cfg(cfg, probe_batch, 3, 1);
+        if (mhs > 0) consider(cfg, mhs);
       }
     }
   }
@@ -1267,37 +1353,28 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
   }
 
   Cand best = top_unique(1).front();
-  log_info("  phase1 best so far " + std::to_string(best.mhs / 1000.0) + " GH/s");
+  log_info("  phase1 best " + std::to_string(best.mhs / 1000.0) + " GH/s");
 
-  // Phase 2: fine hill-climb around top-12 (step-1 intensity, nearby locals, null_local)
+  // Phase 2: fine intensity around top-8 (±12 step 1) + null_local
   {
-    auto top = top_unique(12);
-    log_info("  phase2 fine refine (top " + std::to_string(top.size()) + ", batch=" +
-             std::to_string(fine_batch) + ") …");
+    auto top = top_unique(8);
+    log_info("  phase2 fine refine …");
     for (Cand base : top) {
       if (stop_flag.load()) break;
       const unsigned bi = base.cfg.intensity;
       std::vector<unsigned> refine;
       if (bi == 0) {
-        for (unsigned v = 1; v <= 64; ++v) refine.push_back(v);
-        for (unsigned v : {80u, 96u, 112u, 128u, 160u, 192u, 224u, 256u, 320u, 384u, 448u, 512u, 0u})
-          refine.push_back(v);
+        for (unsigned v : {1u, 2u, 4u, 8u, 12u, 16u, 24u, 32u, 48u, 64u, 0u}) refine.push_back(v);
       } else {
-        const int lo = std::max(1, static_cast<int>(bi) - 48);
-        const int hi = std::min(512, static_cast<int>(bi) + 48);
+        const int lo = std::max(1, static_cast<int>(bi) - 12);
+        const int hi = std::min(512, static_cast<int>(bi) + 12);
         for (int v = lo; v <= hi; ++v) refine.push_back(static_cast<unsigned>(v));
         refine.push_back(0);
       }
-
       std::vector<size_t> loc_try = {base.cfg.local};
-      for (size_t local : locals) {
-        if (local == base.cfg.local) continue;
-        // Nearby locals (±96) + always try 64/128/256 when available.
-        const bool near = (local + 96 >= base.cfg.local && local <= base.cfg.local + 96);
-        const bool common = (local == 64 || local == 128 || local == 256);
-        if (near || common) loc_try.push_back(local);
+      for (size_t L : {64ull, 128ull, 256ull}) {
+        if (L <= d.max_work_group && L != base.cfg.local) loc_try.push_back(L);
       }
-
       for (size_t local : loc_try) {
         for (unsigned intensity : refine) {
           if (stop_flag.load()) break;
@@ -1311,7 +1388,7 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
           consider(cfg, mhs);
           Cand c{cfg, mhs};
           if (better_than(c, best)) {
-            log_info("  refine local=" + std::to_string(local) + " intensity=" +
+            log_info("  refine threads=" + std::to_string(local) + " intensity=" +
                      std::to_string(intensity) + " unroll=" + std::to_string(cfg.unroll) +
                      unroll_tag(cfg.unroll) + " => " + std::to_string(mhs) + " MH/s (" +
                      std::to_string(mhs / 1000.0) + " GH/s)");
@@ -1319,85 +1396,11 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
           }
         }
       }
-
       for (bool nl : {false, true}) {
         GpuTune cfg = best.cfg;
         cfg.null_local = nl;
         cfg.batch = fine_batch;
         const double mhs = try_cfg(cfg, fine_batch, 5, 2);
-        if (mhs > 0) {
-          consider(cfg, mhs);
-          Cand c{cfg, mhs};
-          if (better_than(c, best)) {
-            log_info("  refine null_local=" + std::string(nl ? "1" : "0") + " => " +
-                     std::to_string(mhs) + " MH/s");
-            best = c;
-          }
-        }
-      }
-    }
-  }
-
-  // Phase 3: for each top unroll winner, exhaust intensity 1..512 step 1 at best local (if needed)
-  if (best.mhs < kTargetMhs && !stop_flag.load()) {
-    log_info("  phase3 below target (" + std::to_string(best.mhs / 1000.0) +
-             " < " + std::to_string(kTargetGhs) + " GH/s) — exhaustive intensity …");
-    std::vector<unsigned> unroll_winners;
-    {
-      auto top = top_unique(20);
-      for (const auto& c : top) {
-        bool seen = false;
-        for (unsigned u : unroll_winners)
-          if (u == c.cfg.unroll) seen = true;
-        if (!seen) unroll_winners.push_back(c.cfg.unroll);
-        if (unroll_winners.size() >= 3) break;
-      }
-    }
-    if (unroll_winners.empty()) unroll_winners.push_back(best.cfg.unroll);
-
-    for (unsigned unroll : unroll_winners) {
-      if (stop_flag.load()) break;
-      // Pick best local seen for this unroll.
-      size_t local = best.cfg.local;
-      double best_local_mhs = 0;
-      for (const auto& c : cands) {
-        if (c.cfg.unroll == unroll && c.mhs > best_local_mhs) {
-          best_local_mhs = c.mhs;
-          local = c.cfg.local;
-        }
-      }
-      for (unsigned intensity = 1; intensity <= 512; ++intensity) {
-        if (stop_flag.load()) break;
-        // Skip values already densely probed near current best unless far from peak.
-        GpuTune cfg = best.cfg;
-        cfg.unroll = unroll;
-        cfg.local = local;
-        cfg.intensity = intensity;
-        cfg.chunks = 1;
-        cfg.null_local = false;
-        cfg.batch = fine_batch;
-        // Cheap skip: only sample every 2 away from ±24 of known peak, full step near peak.
-        const int dist = std::abs(static_cast<int>(intensity) - static_cast<int>(best.cfg.intensity));
-        if (dist > 24 && (intensity % 2) != 0) continue;
-        const double mhs = try_cfg(cfg, fine_batch, 5, 1);
-        if (mhs <= 0) continue;
-        consider(cfg, mhs);
-        Cand c{cfg, mhs};
-        if (better_than(c, best)) {
-          log_info("  exhaust local=" + std::to_string(local) + " intensity=" +
-                   std::to_string(intensity) + " unroll=" + std::to_string(unroll) +
-                   unroll_tag(unroll) + " => " + std::to_string(mhs) + " MH/s");
-          best = c;
-        }
-      }
-      // Full-span intensity 0
-      {
-        GpuTune cfg = best.cfg;
-        cfg.unroll = unroll;
-        cfg.local = local;
-        cfg.intensity = 0;
-        cfg.batch = fine_batch;
-        const double mhs = try_cfg(cfg, fine_batch, 5, 1);
         if (mhs > 0) {
           consider(cfg, mhs);
           Cand c{cfg, mhs};
@@ -1407,34 +1410,29 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
     }
   }
 
-  // Phase 4: chunks × top candidates
+  // Phase 3: chunks
   {
-    auto top = top_unique(5);
-    log_info("  phase4 chunks …");
     Cand chunk_best = best;
-    for (Cand base : top) {
-      for (unsigned chunks : chunk_opts) {
-        if (stop_flag.load()) break;
-        GpuTune cfg = base.cfg;
-        cfg.chunks = chunks;
-        cfg.batch = fine_batch;
-        const double mhs = try_cfg(cfg, fine_batch, 5, 2);
-        if (mhs <= 0) continue;
-        consider(cfg, mhs);
-        Cand c{cfg, mhs};
-        if (better_than(c, chunk_best)) {
-          log_info("  try chunks=" + std::to_string(chunks) + " unroll=" +
-                   std::to_string(cfg.unroll) + " => " + std::to_string(mhs) + " MH/s");
-          chunk_best = c;
-        }
+    for (unsigned chunks : chunk_opts) {
+      if (stop_flag.load()) break;
+      GpuTune cfg = best.cfg;
+      cfg.chunks = chunks;
+      cfg.batch = fine_batch;
+      const double mhs = try_cfg(cfg, fine_batch, 5, 2);
+      if (mhs <= 0) continue;
+      consider(cfg, mhs);
+      Cand c{cfg, mhs};
+      if (better_than(c, chunk_best)) {
+        log_info("  try chunks=" + std::to_string(chunks) + " => " + std::to_string(mhs) + " MH/s");
+        chunk_best = c;
       }
     }
     if (better_than(chunk_best, best)) best = chunk_best;
   }
 
-  // Phase 5: batch size sweep on current best + top-3 shapes
+  // Phase 4: hasher batch sweep on top-3
   {
-    log_info("  phase5 batch sweep …");
+    log_info("  phase4 batch sweep …");
     auto top = top_unique(3);
     Cand batch_best = best;
     batch_best.mhs = 0;
@@ -1443,7 +1441,7 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
         if (stop_flag.load()) break;
         GpuTune cfg = base.cfg;
         cfg.batch = batch;
-        const int passes = (batch >= (1ull << 29)) ? 5 : 3;
+        const int passes = (batch >= (1ull << 28)) ? 5 : 3;
         const double mhs = try_cfg(cfg, batch, passes, 2);
         if (mhs <= 0) continue;
         consider(cfg, mhs);
@@ -1455,9 +1453,9 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
     if (batch_best.mhs > 0 && better_than(batch_best, best)) best = batch_best;
   }
 
-  // Phase 6: precision verify — multiple 1G medians; keep best stable config.
+  // Phase 5: precision verify top-4 at 512M × 7 samples
   {
-    log_info("  phase6 precision verify (1G × 7 samples) …");
+    log_info("  phase5 precision verify …");
     auto top = top_unique(4);
     Cand verify_best{};
     verify_best.mhs = 0;
@@ -1465,12 +1463,11 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
       if (stop_flag.load()) break;
       GpuTune cfg = base.cfg;
       cfg.batch = verify_batch;
-      // Extra warm + 7 timed medians for precision.
       const double mhs = try_cfg(cfg, verify_batch, 7, 3);
       if (mhs <= 0) continue;
-      log_info("  verify unroll=" + std::to_string(cfg.unroll) + unroll_tag(cfg.unroll) +
-               " local=" + std::to_string(cfg.local) + " intensity=" +
-               std::to_string(cfg.intensity) + " => " + std::to_string(mhs) + " MH/s (" +
+      log_info("  verify threads=" + std::to_string(cfg.local) + " intensity=" +
+               std::to_string(cfg.intensity) + " unroll=" + std::to_string(cfg.unroll) +
+               unroll_tag(cfg.unroll) + " => " + std::to_string(mhs) + " MH/s (" +
                std::to_string(mhs / 1000.0) + " GH/s)");
       Cand c{cfg, mhs};
       if (verify_best.mhs <= 0 || better_than(c, verify_best)) verify_best = c;
@@ -1478,12 +1475,12 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
     if (verify_best.mhs > 0) best = verify_best;
   }
 
-  // Phase 7: if still below target, one more micro-polish around verified best (±16 intensity, step 1)
+  // Phase 6: if below hasher~3.4, micro-polish intensity ±8 on winner
   if (best.mhs < kTargetMhs && !stop_flag.load()) {
-    log_info("  phase7 micro-polish (still below " + std::to_string(kTargetGhs) + " GH/s) …");
+    log_info("  phase6 below ~3.4 GH/s — micro-polish …");
     const unsigned bi = best.cfg.intensity;
-    const int lo = (bi == 0) ? 1 : std::max(1, static_cast<int>(bi) - 16);
-    const int hi = (bi == 0) ? 64 : std::min(512, static_cast<int>(bi) + 16);
+    const int lo = (bi == 0) ? 1 : std::max(1, static_cast<int>(bi) - 8);
+    const int hi = (bi == 0) ? 32 : std::min(512, static_cast<int>(bi) + 8);
     Cand polish = best;
     for (int v = lo; v <= hi; ++v) {
       if (stop_flag.load()) break;
@@ -1499,30 +1496,13 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
         polish = c;
       }
     }
-    // Also re-check intensity=0 (full-span)
-    {
-      GpuTune cfg = best.cfg;
-      cfg.intensity = 0;
-      cfg.batch = verify_batch;
-      const double mhs = try_cfg(cfg, verify_batch, 5, 2);
-      if (mhs > 0) {
-        Cand c{cfg, mhs};
-        if (better_than(c, polish)) polish = c;
-      }
-    }
     if (better_than(polish, best)) best = polish;
-
-    // Final confirm of winner
-    {
-      GpuTune cfg = best.cfg;
-      cfg.batch = verify_batch;
-      const double mhs = try_cfg(cfg, verify_batch, 7, 3);
-      if (mhs > 0) {
-        best.mhs = mhs;
-        best.cfg.batch = verify_batch;
-        log_info("  final confirm => " + std::to_string(mhs) + " MH/s (" +
-                 std::to_string(mhs / 1000.0) + " GH/s)");
-      }
+    GpuTune cfg = best.cfg;
+    cfg.batch = verify_batch;
+    const double mhs = try_cfg(cfg, verify_batch, 7, 3);
+    if (mhs > 0) {
+      best.mhs = mhs;
+      best.cfg.batch = verify_batch;
     }
   }
 
@@ -1532,15 +1512,15 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
   d.last_mhs.store(best.mhs);
   const double ghs = best.mhs / 1000.0;
   if (best.mhs >= kTargetMhs) {
-    log_info("autotune OK target met gpu=" + d.name + " => " + std::to_string(ghs) + " GH/s (≥ " +
-             std::to_string(kTargetGhs) + ")");
+    log_info("autotune OK ~hasher target gpu=" + d.name + " => " + std::to_string(ghs) +
+             " GH/s (≥ " + std::to_string(kTargetGhs) + ")");
   } else {
-    log_warn("autotune BEST gpu=" + d.name + " => " + std::to_string(ghs) + " GH/s — below target " +
-             std::to_string(kTargetGhs) +
-             " GH/s (likely near INT ALU ceiling; OC / cooler silicon may be required)");
+    log_warn("autotune BEST gpu=" + d.name + " => " + std::to_string(ghs) +
+             " GH/s — below hasher ~" + std::to_string(kTargetGhs) + " GH/s");
   }
-  log_info("autotune best gpu=" + d.name + " local=" + std::to_string(best.cfg.local) +
-           " intensity=" + std::to_string(best.cfg.intensity) +
+  log_info("autotune best gpu=" + d.name + " threads=" + std::to_string(best.cfg.local) +
+           " intensity=" + std::to_string(best.cfg.intensity) + " (blocks~" +
+           std::to_string(best.cfg.intensity * d.compute_units) + ")" +
            " unroll=" + std::to_string(best.cfg.unroll) + unroll_tag(best.cfg.unroll) +
            " chunks=" + std::to_string(best.cfg.chunks) +
            " null_local=" + std::string(best.cfg.null_local ? "1" : "0") +

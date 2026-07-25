@@ -27,57 +27,27 @@ HiveOS-Archiv:
 
 ```bash
 1Miner/scripts/package-hive.sh
-# → 1Miner/releases/1miner-hive-1.0.19.tar.gz
+# → 1Miner/releases/1miner-hive-1.0.20.tar.gz
 ```
 
-## Beispiele
+## Autotune — hasher-Style (Ziel ~3.4 GH/s)
 
-```bash
-./1miner --pool nl.rabbitminer.cc:1901 --wallet WALLET.worker
-./1miner --pool nl.rabbitminer.cc:1931 --wallet WALLET.worker
-./1miner --nats nats://nats.saseulpool.com:4222 --wallet WALLET --id rig1
-```
+hasher 5.2 tuned mit **`threads × blocks × batch × ocl_variant`** (Default threads=256, blocks=1024).
+1Miner v1.0.20 spiegelt das:
 
-## Autotune (pro GPU) — Deep / präzise
+- Kernel **`mine_classic_hi32_c_u32`**: `__constant` Blob, uint-Loop, HEX-LUT, WG-Hint 256 (wie hasher `tail14_hi32_r5_lut_u32`)
+- Autotune-Grid: threads 64–512, CU-Mult 2…64, abs. blocks 256–4096, Batches 16M–1G
+- Maj/Ch wie hasher (`bitselect`), Found-Poll alle 256
+- Cache: `/tmp/1miner-autotune-1.0.20.json`
 
-Beim Start misst 1Miner **jede AMD-Karte parallel** mit **Deep-Autotune** (Ziel **≥ 3.5 GH/s**):
-
-- Längerer Clock-Warmup
-- Dichte Grids: local 16–256, unroll 1/2=ilp2/4=ilp4/14=u4/8, Intensität fein + Exhaust
-- Median aus bis zu **7** Messungen, Fine-Batch 256M, Verify **1G**
-- Wenn unter 3.5 GH/s: zusätzliche Exhaust-/Micro-Polish-Phasen
-- Cache: `/tmp/1miner-autotune-1.0.19.json`
-
-Autotune **darf länger dauern** — Extra config: `--autotune-force`.
-
-Wenn die Karte das ALU-Limit nicht hergibt (typisch Navi10 ~2.9–3.2), loggt 1Miner eine Warnung — OC/Kühlung/stärkere GPU können nötig sein.
-
-| Flag | Wirkung |
-|------|---------|
-| `--autotune` | an (Default) |
-| `--no-autotune` | aus (Defaults / Cache) |
-| `--autotune-force` | neu messen, Cache ignorieren |
-| `--autotune-cache PATH` | Cache-Datei |
+Extra config: `--autotune-force`
 
 ## HiveOS Flight Sheet
 
-- **Miner:** Custom  
-- **Name:** `1miner-hive`  
 - **Installation URL:**  
-  `https://raw.githubusercontent.com/Crypto-EU/Sample/cursor/1miner-amd-hiveos-3705/1Miner/releases/1miner-hive-1.0.19.tar.gz`  
-- **Pool URL:** z. B. `nl.rabbitminer.cc:1901`  
-- **Wallet template:** `%WAL%.%WORKER_NAME%`  
-- **Extra config:** `--autotune-force` (einmalig nach Update; Deep-Tune)
-
-| Port | Modus |
-|------|--------|
-| 1901 | SSL Standard |
-| 1921 | SSL Sync |
-| 1911 | TCP Standard |
-| 1931 | TCP Sync (kein TLS!) |
+  `https://raw.githubusercontent.com/Crypto-EU/Sample/cursor/1miner-amd-hiveos-3705/1Miner/releases/1miner-hive-1.0.20.tar.gz`  
+- **Extra config:** `--autotune-force`
 
 ## Hinweis
 
-1Miner v1.0.19: deep/precise per-GPU autotune targeting ≥3.5 GH/s (longer), ILP4 + W20/W21 crumbs from 1.0.18.
-
-Ohne AMD-OpenCL-Gerät beendet 1Miner mit Fehler. NVIDIA- und CPU-Backends sind absichtlich deaktiviert.
+1Miner v1.0.20: hasher-aligned OpenCL launch/autotune aiming ~3.4 GH/s/card.

@@ -33,13 +33,23 @@ __constant ushort HEX_PAIRS[256] = {
     0x6630u,0x6631u,0x6632u,0x6633u,0x6634u,0x6635u,0x6636u,0x6637u,0x6638u,0x6639u,0x6661u,0x6662u,0x6663u,0x6664u,0x6665u,0x6666u
 };
 
-// bitselect(a,b,c) = (c&b)|(~c&a) → Ch(x,y,z)=bitselect(z,y,x)  (fast on AMD GCN/RDNA)
+// bitselect forms match hasher AMD OpenCL (better ISA than generic Maj).
 #define Ch(x,y,z) bitselect((uint)(z), (uint)(y), (uint)(x))
-#define Maj(x,y,z) ((((uint)(x)) & ((uint)(y))) | (((uint)(z)) & (((uint)(x)) | ((uint)(y)))))
+#define Maj(x,y,z) bitselect((uint)(x), (uint)(y), (uint)((x) ^ (z)))
 #define BSIG0(x) (ROTR32((x), 2u) ^ ROTR32((x), 13u) ^ ROTR32((x), 22u))
 #define BSIG1(x) (ROTR32((x), 6u) ^ ROTR32((x), 11u) ^ ROTR32((x), 25u))
 #define SSIG0(x) (ROTR32((x), 7u) ^ ROTR32((x), 18u) ^ (((uint)(x)) >> 3))
 #define SSIG1(x) (ROTR32((x), 17u) ^ ROTR32((x), 19u) ^ (((uint)(x)) >> 10))
+
+#ifndef ONE_MINER_FOUND_POLL
+#define ONE_MINER_FOUND_POLL 256u
+#endif
+#if ONE_MINER_FOUND_POLL > 0
+#define SHOULD_STOP(FOUND_POLL, RESULT_PTR) \
+  ((((FOUND_POLL)++ & (ONE_MINER_FOUND_POLL - 1u)) == 0u) && (RESULT_PTR)->found)
+#else
+#define SHOULD_STOP(FOUND_POLL, RESULT_PTR) (0)
+#endif
 
 #define RSTEP(WI, KI) do { \
   uint t1 = h + BSIG1(e) + Ch(e,f,g) + (uint)(KI) + (uint)(WI); \
@@ -315,6 +325,15 @@ static inline void encode_counter_words(ulong x, uint* out_h0, uint* out_h1, uin
 }
 
 static inline void encode_lo32_words(uint lo, uint* out_h2, uint* out_h3) {
+  uint p4 = hex_pair_lut((lo >> 24) & 255u);
+  uint p5 = hex_pair_lut((lo >> 16) & 255u);
+  uint p6 = hex_pair_lut((lo >> 8) & 255u);
+  uint p7 = hex_pair_lut(lo & 255u);
+  *out_h2 = (p4 << 16) | p5;
+  *out_h3 = (p6 << 16) | p7;
+}
+
+static inline void encode_lo32_words_arith(uint lo, uint* out_h2, uint* out_h3) {
   uint p4 = hex_pair_arith((lo >> 24) & 255u);
   uint p5 = hex_pair_arith((lo >> 16) & 255u);
   uint p6 = hex_pair_arith((lo >> 8) & 255u);
@@ -328,7 +347,7 @@ static inline void encode_lo32_from_base(uint lo0, uint lo, uint hx2b, uint hx3b
                                          uint* out_h2, uint* out_h3) {
   if (((lo ^ lo0) & ~0xffu) == 0u) {
     *out_h2 = hx2b;
-    *out_h3 = (hx3b & 0xFFFF0000u) | hex_pair_arith(lo & 255u);
+    *out_h3 = (hx3b & 0xFFFF0000u) | hex_pair_lut(lo & 255u);
   } else {
     encode_lo32_words(lo, out_h2, out_h3);
   }
@@ -403,12 +422,14 @@ static inline int digest_le_target_claim(__global ResultBlob* result, ulong ctr,
     ulong start_counter, ulong count, \
     __global ResultBlob* result
 
-__attribute__((work_group_size_hint(64, 1, 1)))
+__attribute__((work_group_size_hint(256, 1, 1)))
 __kernel void mine_classic_hi32_u1(HI32_SCALAR_ARGS) {
   (void)wr3; (void)wr7;
   const ulong gid = (ulong)get_global_id(0);
   const ulong stride = (ulong)get_global_size(0);
+  uint found_poll = 0u;
   for (ulong idx = gid; idx < count; idx += stride) {
+    if (SHOULD_STOP(found_poll, result)) return;
     const ulong ctr = start_counter + idx;
     uint hx2, hx3;
     encode_lo32_words((uint)ctr, &hx2, &hx3);
@@ -420,7 +441,7 @@ __kernel void mine_classic_hi32_u1(HI32_SCALAR_ARGS) {
 }
 
 // Host guarantees count % 4 == 0.
-__attribute__((work_group_size_hint(64, 1, 1)))
+__attribute__((work_group_size_hint(256, 1, 1)))
 __kernel void mine_classic_hi32(HI32_SCALAR_ARGS) {
   (void)wr3; (void)wr7;
   const ulong gid = (ulong)get_global_id(0);
@@ -444,7 +465,7 @@ __kernel void mine_classic_hi32(HI32_SCALAR_ARGS) {
 }
 
 // Host guarantees count % 8 == 0.
-__attribute__((work_group_size_hint(64, 1, 1)))
+__attribute__((work_group_size_hint(256, 1, 1)))
 __kernel void mine_classic_hi32_u8(HI32_SCALAR_ARGS) {
   (void)wr3; (void)wr7;
   const ulong gid = (ulong)get_global_id(0);
@@ -470,7 +491,7 @@ __kernel void mine_classic_hi32_u8(HI32_SCALAR_ARGS) {
 // Dual-nonce ILP: each WI hashes gid*2 and gid*2+1 without early return between them
 // (claim-only) so both digests always run — less divergence, better latency hiding.
 // Host guarantees count % 2 == 0. Autotune unroll==2 selects this kernel.
-__attribute__((work_group_size_hint(64, 1, 1)))
+__attribute__((work_group_size_hint(256, 1, 1)))
 __kernel void mine_classic_hi32_ilp2(HI32_SCALAR_ARGS) {
   (void)wr3; (void)wr7;
   const ulong gid = (ulong)get_global_id(0);
@@ -497,7 +518,7 @@ __kernel void mine_classic_hi32_ilp2(HI32_SCALAR_ARGS) {
 
 // Quad-nonce ILP (claim-only, no early return). Host guarantees count % 4 == 0.
 // Autotune unroll==4 selects this; unroll==14 keeps sequential mine_classic_hi32.
-__attribute__((work_group_size_hint(64, 1, 1)))
+__attribute__((work_group_size_hint(256, 1, 1)))
 __kernel void mine_classic_hi32_ilp4(HI32_SCALAR_ARGS) {
   (void)wr3; (void)wr7;
   const ulong gid = (ulong)get_global_id(0);
@@ -521,7 +542,57 @@ __kernel void mine_classic_hi32_ilp4(HI32_SCALAR_ARGS) {
   }
 }
 
-__attribute__((work_group_size_hint(64, 1, 1)))
+// hasher-style packed constants in constant memory (few kernel args → better occupancy).
+typedef struct {
+  uint mid[8];
+  uint wr[8];
+  uint tgt[8];
+  uint fw0, fw1, fw2, fw3, fw4, h1_lo;
+  uint A5c, E5c;
+  uint pre_w0, pre_w1, pre_w2, pre_w3;
+  uint pre_c20, pre_s21;
+  uint _pad0, _pad1;
+} Hi32Blob;
+
+// Closest to hasher saseul_ocl_tail14_hi32_r5_lut_u32: constant blob, uint indices, LUT hex,
+// WG hint 256. Autotune unroll==3 selects this.
+__attribute__((work_group_size_hint(256, 1, 1)))
+__kernel void mine_classic_hi32_c_u32(__constant const Hi32Blob* restrict blob,
+                                      ulong start_counter,
+                                      ulong count64,
+                                      __global ResultBlob* result) {
+  const uint gid = (uint)get_global_id(0);
+  const uint stride = (uint)get_global_size(0);
+  const uint limit = (uint)count64;
+  const uint start_lo = (uint)start_counter;
+
+  const uint mid0 = blob->mid[0], mid1 = blob->mid[1], mid2 = blob->mid[2], mid3 = blob->mid[3];
+  const uint mid4 = blob->mid[4], mid5 = blob->mid[5], mid6 = blob->mid[6], mid7 = blob->mid[7];
+  const uint wr0 = blob->wr[0], wr1 = blob->wr[1], wr2 = blob->wr[2], wr3 = blob->wr[3];
+  const uint wr4 = blob->wr[4], wr5 = blob->wr[5], wr6 = blob->wr[6], wr7 = blob->wr[7];
+  (void)wr3; (void)wr7;
+  const uint t0 = blob->tgt[0], t1 = blob->tgt[1], t2 = blob->tgt[2], t3 = blob->tgt[3];
+  const uint t4 = blob->tgt[4], t5 = blob->tgt[5], t6 = blob->tgt[6], t7 = blob->tgt[7];
+  const uint fw0 = blob->fw0, fw1 = blob->fw1, fw2 = blob->fw2, fw3 = blob->fw3, fw4 = blob->fw4;
+  const uint h1_lo = blob->h1_lo;
+  const uint A5c = blob->A5c, E5c = blob->E5c;
+  const uint pre_w0 = blob->pre_w0, pre_w1 = blob->pre_w1, pre_w2 = blob->pre_w2, pre_w3 = blob->pre_w3;
+  const uint pre_c20 = blob->pre_c20, pre_s21 = blob->pre_s21;
+
+  uint found_poll = 0u;
+  for (uint idx = gid; idx < limit; idx += stride) {
+    if (SHOULD_STOP(found_poll, result)) return;
+    const ulong ctr = start_counter + (ulong)idx;
+    uint hx2, hx3;
+    encode_lo32_words(start_lo + idx, &hx2, &hx3);
+    TRY_HASH_R5(ctr,
+                (h1_lo << 16) | ((hx2 >> 16) & 0xFFFFu),
+                ((hx2 & 0xFFFFu) << 16) | ((hx3 >> 16) & 0xFFFFu),
+                ((hx3 & 0xFFFFu) << 16) | 0x00008000u);
+  }
+}
+
+__attribute__((work_group_size_hint(256, 1, 1)))
 __kernel void mine_classic_fast(__global const JobBlob* job,
                                 ulong start_counter,
                                 ulong count,

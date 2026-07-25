@@ -70,11 +70,23 @@ struct JobBlobHost {
 struct GpuTune {
   size_t local = 64;
   unsigned intensity = 8;   // global ≈ cu * local * intensity; 0 = full-span
-  unsigned unroll = 1;      // 1, 2=ilp2, 4=ilp4, 8=u8, 14=seq u4
+  unsigned unroll = 1;      // 1=u1, 2=ilp2, 3=c_u32(hasher), 4=ilp4, 8=u8, 14=seq u4
   unsigned chunks = 1;
   bool null_local = false;
-  uint64_t batch = 1ull << 28;
+  uint64_t batch = 1ull << 27;  // hasher-ish default 128M
   double mhs = 0;
+};
+
+// Packed hi32 constants for mine_classic_hi32_c_u32 (__constant). Layout must match .cl.
+struct Hi32BlobHost {
+  uint32_t mid[8]{};
+  uint32_t wr[8]{};
+  uint32_t tgt[8]{};
+  uint32_t fw0 = 0, fw1 = 0, fw2 = 0, fw3 = 0, fw4 = 0, h1_lo = 0;
+  uint32_t A5c = 0, E5c = 0;
+  uint32_t pre_w0 = 0, pre_w1 = 0, pre_w2 = 0, pre_w3 = 0;
+  uint32_t pre_c20 = 0, pre_s21 = 0;
+  uint32_t _pad0 = 0, _pad1 = 0;
 };
 
 struct Hi32Launch {
@@ -89,6 +101,30 @@ struct Hi32Launch {
   // W20/W21 crumbs: w20 = pre_c20 + SSIG0(w5); w21 = pre_s21 + SSIG0(w6) + w5.
   uint32_t pre_c20 = 0, pre_s21 = 0;
   bool valid = false;
+
+  Hi32BlobHost to_blob() const {
+    Hi32BlobHost b{};
+    for (int i = 0; i < 8; ++i) {
+      b.mid[i] = mid[i];
+      b.wr[i] = wr[i];
+      b.tgt[i] = tgt[i];
+    }
+    b.fw0 = fw0;
+    b.fw1 = fw1;
+    b.fw2 = fw2;
+    b.fw3 = fw3;
+    b.fw4 = fw4;
+    b.h1_lo = h1_lo;
+    b.A5c = A5c;
+    b.E5c = E5c;
+    b.pre_w0 = pre_w0;
+    b.pre_w1 = pre_w1;
+    b.pre_w2 = pre_w2;
+    b.pre_w3 = pre_w3;
+    b.pre_c20 = pre_c20;
+    b.pre_s21 = pre_s21;
+    return b;
+  }
 };
 
 class OpenClBackend {
@@ -123,7 +159,9 @@ class OpenClBackend {
     void* kernel_hi32_u8 = nullptr;  // scalar u8
     void* kernel_hi32_ilp2 = nullptr;  // dual-nonce ILP (unroll==2)
     void* kernel_hi32_ilp4 = nullptr;  // quad-nonce ILP (unroll==4)
+    void* kernel_hi32_c_u32 = nullptr; // hasher-like constant blob + uint loop (unroll==3)
     void* job_mem = nullptr;         // only for fast fallback
+    void* hi_mem = nullptr;          // Hi32BlobHost for c_u32
     void* res_mem = nullptr;
     void* res_mem_b = nullptr;       // ping-pong
     int res_ping = 0;
@@ -157,6 +195,8 @@ class OpenClBackend {
                     const GpuTune& cfg, void** out_event = nullptr);
   static int set_scalar_hi32_args(void* ker, const Hi32Launch& L, uint64_t start, uint64_t count,
                                   void* res);
+  static int set_const_hi32_args(void* ker, void* hi_mem, uint64_t start, uint64_t count, void* res);
+  bool is_const_blob_kernel(unsigned unroll) const;
   bool load_tune_cache(const std::string& path);
   void save_tune_cache(const std::string& path) const;
   void autotune_one(Dev& d, int di, const PreparedJob& job, std::atomic<bool>& stop_flag);

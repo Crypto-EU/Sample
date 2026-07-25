@@ -851,16 +851,19 @@ std::vector<ShareCandidate> OpenClBackend::scan(int device_index, uint64_t start
     if (!result.found) return;
     ShareCandidate s;
     s.nonce_hex = format_classic_nonce(result.counter);
+    for (int i = 0; i < 8; ++i) {
+      s.hash[i * 4 + 0] = static_cast<uint8_t>((result.hash[i] >> 24) & 0xff);
+      s.hash[i * 4 + 1] = static_cast<uint8_t>((result.hash[i] >> 16) & 0xff);
+      s.hash[i * 4 + 2] = static_cast<uint8_t>((result.hash[i] >> 8) & 0xff);
+      s.hash[i * 4 + 3] = static_cast<uint8_t>(result.hash[i] & 0xff);
+    }
     s.timestamp_us = job.timestamp_us;
     s.gpu_index = device_index;
-    Hash256 verify{};
-    // Only accept shares that CPU-recompute to a valid digest under target.
-    // (GPU digest is advisory — never trust it alone; prevents false submits.)
-    if (!mine_hash_classic(job, result.counter, verify)) {
-      log_warn("OpenCL share failed CPU verify nonce=" + s.nonce_hex);
+    // AMD OpenCL only — trust GPU digest; no host/CPU re-hash.
+    if (!hash_meets_target(s.hash, job.target)) {
+      log_warn("OpenCL share rejected (GPU digest above target) nonce=" + s.nonce_hex);
       return;
     }
-    s.hash = verify;
     s.blockhash_hex = make_share_blockhash(job, s.nonce_hex, s.hash);
     found.push_back(s);
   };
@@ -1145,7 +1148,7 @@ bool OpenClBackend::load_tune_cache(const std::string& path) {
 
 void OpenClBackend::save_tune_cache(const std::string& path) const {
   std::ostringstream ss;
-  ss << "{\"version\":20,\"devices\":[";
+  ss << "{\"version\":22,\"devices\":[";
   for (size_t i = 0; i < devices_.size(); ++i) {
     const auto& d = *devices_[i];
     if (i) ss << ",";

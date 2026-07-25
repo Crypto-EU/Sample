@@ -27,27 +27,27 @@ HiveOS-Archiv:
 
 ```bash
 1Miner/scripts/package-hive.sh
-# → 1Miner/releases/1miner-hive-1.0.21.tar.gz
+# → 1Miner/releases/1miner-hive-1.0.22.tar.gz
 ```
 
 ## Autotune — hasher-Style (Ziel ~3.4 GH/s)
 
 hasher 5.2 tuned mit **`threads × blocks × batch × ocl_variant`** (Default threads=256, blocks=1024).
-1Miner v1.0.21 spiegelt das:
+1Miner v1.0.22 spiegelt das:
 
 - Kernel **`mine_classic_hi32_c_u32`**: `__constant` Blob, uint-Loop, HEX-LUT, WG-Hint 256 (wie hasher `tail14_hi32_r5_lut_u32`)
 - Autotune-Grid: threads 64–512, CU-Mult 2…64, abs. blocks 256–4096, Batches 16M–1G
 - Maj/Ch wie hasher (`bitselect`), Found-Poll alle 256
-- Cache: `/tmp/1miner-autotune-1.0.21.json`
+- Cache: `/tmp/1miner-autotune-1.0.22.json`
 
 Extra config: `--autotune-force`
 
 ## HiveOS Flight Sheet
 
 - **Installation URL:**  
-  `https://raw.githubusercontent.com/Crypto-EU/Sample/cursor/1miner-amd-hiveos-3705/1Miner/releases/1miner-hive-1.0.21.tar.gz`  
+  `https://raw.githubusercontent.com/Crypto-EU/Sample/cursor/1miner-amd-hiveos-3705/1Miner/releases/1miner-hive-1.0.22.tar.gz`  
 - **Extra config:** `--autotune-force`
 
 ## Hinweis
 
-1Miner v1.0.21: fix false OpenCL shares (c_u32 now scalar-arg u32 loop; CPU-only accept). hasher-style tune ~3.4 GH/s.
+1Miner v1.0.22: GPU-only (no host/CPU re-hash or CPU mining); hasher-style u32 loop + autotune ~3.4 GH/s.

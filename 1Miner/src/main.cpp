@@ -20,7 +20,7 @@ namespace {
 std::atomic<bool> g_stop{false};
 void on_signal(int) { g_stop = true; }
 
-constexpr const char* kVersion = "1.0.18";
+constexpr const char* kVersion = "1.0.19";
 }  // namespace
 
 static void usage(const char* argv0) {
@@ -41,11 +41,11 @@ static void usage(const char* argv0) {
       << "  --autotune                        Per-GPU OpenCL tune (default: on)\n"
       << "  --no-autotune                     Skip autotune; use defaults / cache\n"
       << "  --autotune-force                  Retune even if cache exists\n"
-      << "  --autotune-cache PATH             Default: /tmp/1miner-autotune-1.0.18.json\n"
+      << "  --autotune-cache PATH             Default: /tmp/1miner-autotune-1.0.19.json\n"
       << "  --help\n\n"
       << "HiveOS example:\n"
       << "  ./1miner --pool nl.rabbitminer.cc:1901 --wallet WALLET.worker\n"
-      << "  Extra config: --autotune-force   (retune each card once)\n";
+      << "  Extra config: --autotune-force   (deep retune; targets ≥3.5 GH/s/card)\n";
 }
 
 int main(int argc, char** argv) {
@@ -56,7 +56,7 @@ int main(int argc, char** argv) {
   std::string worker;
   std::string nonce_mode_s = "classic";
   std::string stats_file = "/tmp/saseul-miner-stats.json";
-  std::string autotune_cache = "/tmp/1miner-autotune-1.0.18.json";
+  std::string autotune_cache = "/tmp/1miner-autotune-1.0.19.json";
   bool do_autotune = true;
   bool force_autotune = false;
   std::vector<int> devices;
@@ -315,8 +315,8 @@ int main(int argc, char** argv) {
       log_error("prepare_job for autotune failed: " + perr);
       g_stop = true;
     } else if (do_autotune) {
-      log_info(std::string("autotune ") + (force_autotune ? "FORCE " : "") +
-               "starting (cache=" + autotune_cache + ")");
+      log_info(std::string("autotune DEEP ") + (force_autotune ? "FORCE " : "") +
+               "starting target≥3.5 GH/s/card (cache=" + autotune_cache + ")");
       ocl->autotune(tune_prep, g_stop, autotune_cache, force_autotune, devices);
       for (int i = 0; i < ocl->device_count(); ++i) {
         if (!device_enabled(i)) continue;

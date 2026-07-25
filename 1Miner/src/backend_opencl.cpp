@@ -944,7 +944,8 @@ std::vector<ShareCandidate> OpenClBackend::scan(int device_index, uint64_t start
 }
 
 double OpenClBackend::bench_launch(Dev& d, const PreparedJob& job, uint64_t start, uint64_t count,
-                                   const GpuTune& cfg, std::atomic<bool>& stop_flag) {
+                                   const GpuTune& cfg, std::atomic<bool>& stop_flag,
+                                   int timed_passes, int warm_passes) {
   if (stop_flag.load() || count == 0 || job.prefix_ascii.size() < 142) return 0;
   if (!fill_hi32_launch(d, job, start, count, nullptr)) return 0;
 
@@ -954,6 +955,11 @@ double OpenClBackend::bench_launch(Dev& d, const PreparedJob& job, uint64_t star
 
   void* ker = pick_kernel(d, unroll);
   if (!ker) return 0;
+
+  if (timed_passes < 1) timed_passes = 1;
+  if (timed_passes > 9) timed_passes = 9;
+  if (warm_passes < 0) warm_passes = 0;
+  if (warm_passes > 4) warm_passes = 4;
 
   cl_command_queue q = static_cast<cl_command_queue>(d.queue);
   cl_mem res_mem = static_cast<cl_mem>(d.res_mem);
@@ -972,21 +978,20 @@ double OpenClBackend::bench_launch(Dev& d, const PreparedJob& job, uint64_t star
     return (static_cast<double>(work) / sec) / 1e6;
   };
 
-  // Warmup (not timed) — bring clocks up.
-  clEnqueueWriteBuffer(q, res_mem, CL_FALSE, 0, sizeof(found_zero), &found_zero, 0, nullptr,
-                       nullptr);
-  if (!enqueue_hi32(d, ker, start, work, res_mem, cfg)) return 0;
-  clFinish(q);
-  clEnqueueWriteBuffer(q, res_mem, CL_FALSE, 0, sizeof(found_zero), &found_zero, 0, nullptr,
-                       nullptr);
-  if (!enqueue_hi32(d, ker, start, work, res_mem, cfg)) return 0;
-  clFinish(q);
+  // Warmup (not timed) — bring clocks / power limit up.
+  for (int w = 0; w < warm_passes; ++w) {
+    if (stop_flag.load()) return 0;
+    clEnqueueWriteBuffer(q, res_mem, CL_FALSE, 0, sizeof(found_zero), &found_zero, 0, nullptr,
+                         nullptr);
+    if (!enqueue_hi32(d, ker, start, work, res_mem, cfg)) return 0;
+    clFinish(q);
+  }
   if (stop_flag.load()) return 0;
 
-  // Three timed runs — take median (stable vs GPU boost / noise).
-  double samples[3] = {0, 0, 0};
+  // Timed runs — median (stable vs GPU boost / noise).
+  double samples[9] = {};
   int n = 0;
-  for (int pass = 0; pass < 3; ++pass) {
+  for (int pass = 0; pass < timed_passes; ++pass) {
     const double mhs = one_pass();
     if (mhs <= 0) continue;
     samples[n++] = mhs;
@@ -1067,7 +1072,7 @@ bool OpenClBackend::load_tune_cache(const std::string& path) {
 
 void OpenClBackend::save_tune_cache(const std::string& path) const {
   std::ostringstream ss;
-  ss << "{\"version\":17,\"devices\":[";
+  ss << "{\"version\":19,\"devices\":[";
   for (size_t i = 0; i < devices_.size(); ++i) {
     const auto& d = *devices_[i];
     if (i) ss << ",";
@@ -1089,19 +1094,32 @@ void OpenClBackend::save_tune_cache(const std::string& path) const {
 
 void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
                                  std::atomic<bool>& stop_flag) {
-  log_info("autotune start gpu[" + std::to_string(di) + "]=" + d.name +
-           " cu=" + std::to_string(d.compute_units) + " max_wg=" + std::to_string(d.max_work_group) +
-           " — max raw MH/s (Navi10 ~3 GH/s; ILP4 + W20/21 precompute)");
+  // Deep / precise autotune. Longer is intentional — goal ≥ 3.5 GH/s per card when silicon allows.
+  constexpr double kTargetMhs = 3500.0;  // 3.5 GH/s
+  constexpr double kTargetGhs = kTargetMhs / 1000.0;
 
-  const size_t locals[] = {32, 64, 128, 256};
+  log_info("autotune DEEP gpu[" + std::to_string(di) + "]=" + d.name +
+           " cu=" + std::to_string(d.compute_units) + " max_wg=" + std::to_string(d.max_work_group) +
+           " — target ≥ " + std::to_string(kTargetGhs) + " GH/s (precise, may take long)");
+
+  std::vector<size_t> locals;
+  for (size_t L : {16ull, 32ull, 48ull, 64ull, 96ull, 128ull, 160ull, 192ull, 224ull, 256ull}) {
+    if (L <= d.max_work_group) locals.push_back(L);
+  }
+  if (locals.empty()) locals.push_back(std::min<size_t>(64, d.max_work_group));
+
   // 1=u1, 2=ilp2, 4=ilp4, 14=seq u4, 8=u8
   const unsigned unrolls[] = {1, 2, 4, 14, 8};
-  const unsigned target_wpi[] = {64, 128, 256, 512, 1024, 2048};
-  // Fixed intensity grid (low + high) in addition to WPI-derived.
-  const unsigned intensity_grid[] = {1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 0};
-  const uint64_t batches[] = {1ull << 26, 1ull << 27, 1ull << 28, 1ull << 29, 1ull << 30};
-  const unsigned chunk_opts[] = {1, 2, 4};
-  const uint64_t probe_batch = 1ull << 26;  // 64M probe
+  const unsigned target_wpi[] = {32, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3072};
+  const unsigned intensity_grid[] = {1,  2,  3,  4,  5,  6,  8,  10, 12, 14, 16, 20, 24, 28, 32,
+                                     40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
+                                     384, 448, 512, 0};
+  const uint64_t batches[] = {1ull << 26, 1ull << 27, 3ull << 27, 1ull << 28, 3ull << 28,
+                              1ull << 29, 3ull << 29, 1ull << 30};
+  const unsigned chunk_opts[] = {1, 2, 3, 4, 6, 8};
+  const uint64_t probe_batch = 1ull << 27;   // 128M coarse probe (more stable than 64M)
+  const uint64_t fine_batch = 1ull << 28;    // 256M fine refine
+  const uint64_t verify_batch = 1ull << 30;  // 1G final verify
 
   auto align_hi32 = [](uint64_t& start, uint64_t count) {
     const uint64_t room = (uint64_t{1} << 32) - (start & 0xffffffffull);
@@ -1110,19 +1128,18 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
 
   uint64_t ctr = static_cast<uint64_t>(now_us()) ^ (uint64_t(di) << 32);
 
-  auto try_cfg = [&](GpuTune cfg, uint64_t count) -> double {
+  auto try_cfg = [&](GpuTune cfg, uint64_t count, int timed = 3, int warm = 2) -> double {
     if (stop_flag.load()) return 0;
     if (cfg.local == 0 || cfg.local > d.max_work_group) return 0;
     if (cfg.chunks == 0) cfg.chunks = 1;
     cfg.unroll = normalize_unroll(cfg.unroll);
-    // Cap batch to remaining hi32 room after align.
     uint64_t start = ctr;
     align_hi32(start, count);
     const uint64_t room = (uint64_t{1} << 32) - (start & 0xffffffffull);
     if (count > room) count = align_count_to_unroll(room, cfg.unroll);
     if (count == 0) return 0;
     ctr = start;
-    const double mhs = bench_launch(d, job, start, count, cfg, stop_flag);
+    const double mhs = bench_launch(d, job, start, count, cfg, stop_flag, timed, warm);
     ctr += count;
     return mhs;
   };
@@ -1132,35 +1149,70 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
     double mhs = 0;
   };
   std::vector<Cand> cands;
-  cands.reserve(256);
+  cands.reserve(1024);
 
-  // Pure max MH/s — no WPI preference.
   auto better_than = [](const Cand& a, const Cand& b) { return a.mhs > b.mhs; };
+
+  auto same_shape = [](const GpuTune& a, const GpuTune& b) {
+    return a.local == b.local && a.intensity == b.intensity && a.unroll == b.unroll &&
+           a.chunks == b.chunks && a.null_local == b.null_local;
+  };
 
   auto consider = [&](const GpuTune& cfg, double mhs) {
     if (mhs <= 0) return;
-    cands.push_back(Cand{cfg, mhs});
+    for (auto& c : cands) {
+      if (same_shape(c.cfg, cfg)) {
+        if (mhs > c.mhs) {
+          c.mhs = mhs;
+          c.cfg = cfg;
+          c.cfg.mhs = mhs;
+        }
+        return;
+      }
+    }
+    GpuTune copy = cfg;
+    copy.mhs = mhs;
+    cands.push_back(Cand{copy, mhs});
   };
 
-  // Phase 0: clock warm-up
+  auto top_unique = [&](size_t n) {
+    std::sort(cands.begin(), cands.end(),
+              [&](const Cand& a, const Cand& b) { return better_than(a, b); });
+    std::vector<Cand> top;
+    for (const auto& c : cands) {
+      bool dup = false;
+      for (const auto& t : top) {
+        if (t.cfg.local == c.cfg.local && t.cfg.intensity == c.cfg.intensity &&
+            t.cfg.unroll == c.cfg.unroll)
+          dup = true;
+      }
+      if (!dup) top.push_back(c);
+      if (top.size() >= n) break;
+    }
+    return top;
+  };
+
+  // Phase 0: long clock / power warm-up (stabilize before measuring).
   {
     GpuTune warm = d.tune;
     warm.local = std::min<size_t>(64, d.max_work_group);
-    warm.intensity = 8;
+    warm.intensity = 16;
     warm.unroll = 1;
     warm.chunks = 1;
     warm.null_local = false;
-    try_cfg(warm, 1ull << 24);
-    try_cfg(warm, 1ull << 24);
+    log_info("  warm-up clocks …");
+    for (int i = 0; i < 4 && !stop_flag.load(); ++i) {
+      try_cfg(warm, 1ull << 26, 1, 0);  // single timed = effectively burn-in
+    }
   }
 
-  // Phase 1: unroll × local × (WPI-derived + fixed intensity grid)
+  // Phase 1: coarse — all unroll × local × (WPI + dense intensity)
+  log_info("  phase1 coarse scan (probe=" + std::to_string(probe_batch) + ") …");
   for (unsigned unroll : unrolls) {
     if (stop_flag.load()) break;
     for (size_t local : locals) {
-      if (local > d.max_work_group) continue;
+      if (stop_flag.load()) break;
 
-      // WPI-derived intensities
       for (unsigned wpi : target_wpi) {
         if (stop_flag.load()) break;
         const uint64_t units = probe_batch / unroll_period(unroll);
@@ -1178,18 +1230,16 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
         cfg.chunks = 1;
         cfg.null_local = false;
         cfg.batch = probe_batch;
-        const double mhs = try_cfg(cfg, probe_batch);
+        const double mhs = try_cfg(cfg, probe_batch, 3, 1);
         if (mhs > 0) {
-          log_info("  try local=" + std::to_string(local) +
-                   " intensity=" + std::to_string(intensity) +
-                   " unroll=" + std::to_string(unroll) + unroll_tag(unroll) +
-                   " wpi~" + std::to_string(wpi) +
-                   " => " + std::to_string(mhs) + " MH/s");
+          log_info("  try local=" + std::to_string(local) + " intensity=" +
+                   std::to_string(intensity) + " unroll=" + std::to_string(unroll) +
+                   unroll_tag(unroll) + " wpi~" + std::to_string(wpi) + " => " +
+                   std::to_string(mhs) + " MH/s");
           consider(cfg, mhs);
         }
       }
 
-      // Fixed intensity grid (low and high) + full-span
       for (unsigned intensity : intensity_grid) {
         if (stop_flag.load()) break;
         GpuTune cfg{};
@@ -1199,12 +1249,11 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
         cfg.chunks = 1;
         cfg.null_local = false;
         cfg.batch = probe_batch;
-        const double mhs = try_cfg(cfg, probe_batch);
+        const double mhs = try_cfg(cfg, probe_batch, 3, 1);
         if (mhs > 0) {
-          log_info("  try local=" + std::to_string(local) +
-                   " intensity=" + std::to_string(intensity) +
-                   " unroll=" + std::to_string(unroll) + unroll_tag(unroll) +
-                   " => " + std::to_string(mhs) + " MH/s");
+          log_info("  try local=" + std::to_string(local) + " intensity=" +
+                   std::to_string(intensity) + " unroll=" + std::to_string(unroll) +
+                   unroll_tag(unroll) + " => " + std::to_string(mhs) + " MH/s");
           consider(cfg, mhs);
         }
       }
@@ -1217,123 +1266,263 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
     return;
   }
 
-  std::sort(cands.begin(), cands.end(),
-            [&](const Cand& a, const Cand& b) { return better_than(a, b); });
-  // Keep top 5 unique configs
-  std::vector<Cand> top;
-  for (const auto& c : cands) {
-    bool dup = false;
-    for (const auto& t : top) {
-      if (t.cfg.local == c.cfg.local && t.cfg.intensity == c.cfg.intensity &&
-          t.cfg.unroll == c.cfg.unroll)
-        dup = true;
+  Cand best = top_unique(1).front();
+  log_info("  phase1 best so far " + std::to_string(best.mhs / 1000.0) + " GH/s");
+
+  // Phase 2: fine hill-climb around top-12 (step-1 intensity, nearby locals, null_local)
+  {
+    auto top = top_unique(12);
+    log_info("  phase2 fine refine (top " + std::to_string(top.size()) + ", batch=" +
+             std::to_string(fine_batch) + ") …");
+    for (Cand base : top) {
+      if (stop_flag.load()) break;
+      const unsigned bi = base.cfg.intensity;
+      std::vector<unsigned> refine;
+      if (bi == 0) {
+        for (unsigned v = 1; v <= 64; ++v) refine.push_back(v);
+        for (unsigned v : {80u, 96u, 112u, 128u, 160u, 192u, 224u, 256u, 320u, 384u, 448u, 512u, 0u})
+          refine.push_back(v);
+      } else {
+        const int lo = std::max(1, static_cast<int>(bi) - 48);
+        const int hi = std::min(512, static_cast<int>(bi) + 48);
+        for (int v = lo; v <= hi; ++v) refine.push_back(static_cast<unsigned>(v));
+        refine.push_back(0);
+      }
+
+      std::vector<size_t> loc_try = {base.cfg.local};
+      for (size_t local : locals) {
+        if (local == base.cfg.local) continue;
+        // Nearby locals (±96) + always try 64/128/256 when available.
+        const bool near = (local + 96 >= base.cfg.local && local <= base.cfg.local + 96);
+        const bool common = (local == 64 || local == 128 || local == 256);
+        if (near || common) loc_try.push_back(local);
+      }
+
+      for (size_t local : loc_try) {
+        for (unsigned intensity : refine) {
+          if (stop_flag.load()) break;
+          GpuTune cfg = base.cfg;
+          cfg.local = local;
+          cfg.intensity = intensity;
+          cfg.null_local = false;
+          cfg.batch = fine_batch;
+          const double mhs = try_cfg(cfg, fine_batch, 5, 2);
+          if (mhs <= 0) continue;
+          consider(cfg, mhs);
+          Cand c{cfg, mhs};
+          if (better_than(c, best)) {
+            log_info("  refine local=" + std::to_string(local) + " intensity=" +
+                     std::to_string(intensity) + " unroll=" + std::to_string(cfg.unroll) +
+                     unroll_tag(cfg.unroll) + " => " + std::to_string(mhs) + " MH/s (" +
+                     std::to_string(mhs / 1000.0) + " GH/s)");
+            best = c;
+          }
+        }
+      }
+
+      for (bool nl : {false, true}) {
+        GpuTune cfg = best.cfg;
+        cfg.null_local = nl;
+        cfg.batch = fine_batch;
+        const double mhs = try_cfg(cfg, fine_batch, 5, 2);
+        if (mhs > 0) {
+          consider(cfg, mhs);
+          Cand c{cfg, mhs};
+          if (better_than(c, best)) {
+            log_info("  refine null_local=" + std::string(nl ? "1" : "0") + " => " +
+                     std::to_string(mhs) + " MH/s");
+            best = c;
+          }
+        }
+      }
     }
-    if (!dup) top.push_back(c);
-    if (top.size() >= 5) break;
   }
 
-  // Phase 2: refine each top candidate — intensity neighborhood + null_local
-  Cand best = top.front();
-  for (Cand base : top) {
-    if (stop_flag.load()) break;
-    const unsigned bi = base.cfg.intensity;
-    std::vector<unsigned> refine;
-    if (bi == 0) {
-      refine = {0, 1, 2, 4, 8, 12, 16, 24, 32, 64, 128, 256, 512};
-    } else {
-      for (int delta : {-64, -32, -16, -8, -4, -2, -1, 1, 2, 4, 8, 16, 32, 64}) {
-        const int v = static_cast<int>(bi) + delta;
-        if (v >= 1 && v <= 512) refine.push_back(static_cast<unsigned>(v));
+  // Phase 3: for each top unroll winner, exhaust intensity 1..512 step 1 at best local (if needed)
+  if (best.mhs < kTargetMhs && !stop_flag.load()) {
+    log_info("  phase3 below target (" + std::to_string(best.mhs / 1000.0) +
+             " < " + std::to_string(kTargetGhs) + " GH/s) — exhaustive intensity …");
+    std::vector<unsigned> unroll_winners;
+    {
+      auto top = top_unique(20);
+      for (const auto& c : top) {
+        bool seen = false;
+        for (unsigned u : unroll_winners)
+          if (u == c.cfg.unroll) seen = true;
+        if (!seen) unroll_winners.push_back(c.cfg.unroll);
+        if (unroll_winners.size() >= 3) break;
       }
-      refine.push_back(0);
     }
-    std::vector<size_t> loc_try = {base.cfg.local};
-    for (size_t local : locals) {
-      if (local > d.max_work_group) continue;
-      if (local == base.cfg.local) continue;
-      if (local + 64 >= base.cfg.local && local <= base.cfg.local + 64) loc_try.push_back(local);
-    }
+    if (unroll_winners.empty()) unroll_winners.push_back(best.cfg.unroll);
 
-    for (size_t local : loc_try) {
-      for (unsigned intensity : refine) {
+    for (unsigned unroll : unroll_winners) {
+      if (stop_flag.load()) break;
+      // Pick best local seen for this unroll.
+      size_t local = best.cfg.local;
+      double best_local_mhs = 0;
+      for (const auto& c : cands) {
+        if (c.cfg.unroll == unroll && c.mhs > best_local_mhs) {
+          best_local_mhs = c.mhs;
+          local = c.cfg.local;
+        }
+      }
+      for (unsigned intensity = 1; intensity <= 512; ++intensity) {
         if (stop_flag.load()) break;
-        GpuTune cfg = base.cfg;
+        // Skip values already densely probed near current best unless far from peak.
+        GpuTune cfg = best.cfg;
+        cfg.unroll = unroll;
         cfg.local = local;
         cfg.intensity = intensity;
+        cfg.chunks = 1;
         cfg.null_local = false;
-        const double mhs = try_cfg(cfg, probe_batch);
+        cfg.batch = fine_batch;
+        // Cheap skip: only sample every 2 away from ±24 of known peak, full step near peak.
+        const int dist = std::abs(static_cast<int>(intensity) - static_cast<int>(best.cfg.intensity));
+        if (dist > 24 && (intensity % 2) != 0) continue;
+        const double mhs = try_cfg(cfg, fine_batch, 5, 1);
         if (mhs <= 0) continue;
+        consider(cfg, mhs);
         Cand c{cfg, mhs};
         if (better_than(c, best)) {
-          log_info("  refine local=" + std::to_string(local) +
-                   " intensity=" + std::to_string(intensity) +
-                   " unroll=" + std::to_string(cfg.unroll) +
-                   " => " + std::to_string(mhs) + " MH/s");
+          log_info("  exhaust local=" + std::to_string(local) + " intensity=" +
+                   std::to_string(intensity) + " unroll=" + std::to_string(unroll) +
+                   unroll_tag(unroll) + " => " + std::to_string(mhs) + " MH/s");
           best = c;
         }
       }
-    }
-
-    {
-      GpuTune cfg = best.cfg;
-      cfg.null_local = true;
-      const double mhs = try_cfg(cfg, probe_batch);
-      if (mhs > 0) {
-        Cand c{cfg, mhs};
-        if (better_than(c, best)) {
-          log_info("  refine null_local => " + std::to_string(mhs) + " MH/s");
-          best = c;
+      // Full-span intensity 0
+      {
+        GpuTune cfg = best.cfg;
+        cfg.unroll = unroll;
+        cfg.local = local;
+        cfg.intensity = 0;
+        cfg.batch = fine_batch;
+        const double mhs = try_cfg(cfg, fine_batch, 5, 1);
+        if (mhs > 0) {
+          consider(cfg, mhs);
+          Cand c{cfg, mhs};
+          if (better_than(c, best)) best = c;
         }
       }
     }
   }
 
-  // Phase 3: multi-chunk launches — pick absolute highest MH/s
+  // Phase 4: chunks × top candidates
   {
+    auto top = top_unique(5);
+    log_info("  phase4 chunks …");
     Cand chunk_best = best;
-    for (unsigned chunks : chunk_opts) {
-      if (stop_flag.load()) break;
-      GpuTune cfg = best.cfg;
-      cfg.chunks = chunks;
-      const double mhs = try_cfg(cfg, probe_batch);
-      if (mhs <= 0) continue;
-      log_info("  try chunks=" + std::to_string(chunks) + " => " + std::to_string(mhs) + " MH/s");
-      Cand c{cfg, mhs};
-      if (better_than(c, chunk_best)) chunk_best = c;
+    for (Cand base : top) {
+      for (unsigned chunks : chunk_opts) {
+        if (stop_flag.load()) break;
+        GpuTune cfg = base.cfg;
+        cfg.chunks = chunks;
+        cfg.batch = fine_batch;
+        const double mhs = try_cfg(cfg, fine_batch, 5, 2);
+        if (mhs <= 0) continue;
+        consider(cfg, mhs);
+        Cand c{cfg, mhs};
+        if (better_than(c, chunk_best)) {
+          log_info("  try chunks=" + std::to_string(chunks) + " unroll=" +
+                   std::to_string(cfg.unroll) + " => " + std::to_string(mhs) + " MH/s");
+          chunk_best = c;
+        }
+      }
     }
-    best = chunk_best;
+    if (better_than(chunk_best, best)) best = chunk_best;
   }
 
-  // Phase 4: batch size 64M .. 1G — absolute highest MH/s
+  // Phase 5: batch size sweep on current best + top-3 shapes
   {
+    log_info("  phase5 batch sweep …");
+    auto top = top_unique(3);
     Cand batch_best = best;
     batch_best.mhs = 0;
-    for (uint64_t batch : batches) {
-      if (stop_flag.load()) break;
-      GpuTune cfg = best.cfg;
-      cfg.batch = batch;
-      const double mhs = try_cfg(cfg, batch);
-      if (mhs <= 0) continue;
-      log_info("  try batch=" + std::to_string(batch) + " => " + std::to_string(mhs) + " MH/s");
-      Cand c{cfg, mhs};
-      if (batch_best.mhs <= 0 || better_than(c, batch_best)) batch_best = c;
+    for (Cand base : top) {
+      for (uint64_t batch : batches) {
+        if (stop_flag.load()) break;
+        GpuTune cfg = base.cfg;
+        cfg.batch = batch;
+        const int passes = (batch >= (1ull << 29)) ? 5 : 3;
+        const double mhs = try_cfg(cfg, batch, passes, 2);
+        if (mhs <= 0) continue;
+        consider(cfg, mhs);
+        log_info("  try batch=" + std::to_string(batch) + " => " + std::to_string(mhs) + " MH/s");
+        Cand c{cfg, mhs};
+        if (batch_best.mhs <= 0 || better_than(c, batch_best)) batch_best = c;
+      }
     }
-    if (batch_best.mhs > 0) best = batch_best;
+    if (batch_best.mhs > 0 && better_than(batch_best, best)) best = batch_best;
   }
 
-  // Phase 5: long verify at 512M–1G
+  // Phase 6: precision verify — multiple 1G medians; keep best stable config.
   {
-    GpuTune cfg = best.cfg;
-    uint64_t verify = cfg.batch;
-    if (verify < (1ull << 29)) verify = 1ull << 29;  // at least 512M
-    if (verify > (1ull << 30)) verify = 1ull << 30;
-    cfg.batch = verify;
-    log_info("  long verify batch=" + std::to_string(verify) + " …");
-    const double mhs = try_cfg(cfg, verify);
-    if (mhs > 0) {
-      best.mhs = mhs;
-      best.cfg.batch = verify;
-      log_info("  verify => " + std::to_string(mhs) + " MH/s");
+    log_info("  phase6 precision verify (1G × 7 samples) …");
+    auto top = top_unique(4);
+    Cand verify_best{};
+    verify_best.mhs = 0;
+    for (Cand base : top) {
+      if (stop_flag.load()) break;
+      GpuTune cfg = base.cfg;
+      cfg.batch = verify_batch;
+      // Extra warm + 7 timed medians for precision.
+      const double mhs = try_cfg(cfg, verify_batch, 7, 3);
+      if (mhs <= 0) continue;
+      log_info("  verify unroll=" + std::to_string(cfg.unroll) + unroll_tag(cfg.unroll) +
+               " local=" + std::to_string(cfg.local) + " intensity=" +
+               std::to_string(cfg.intensity) + " => " + std::to_string(mhs) + " MH/s (" +
+               std::to_string(mhs / 1000.0) + " GH/s)");
+      Cand c{cfg, mhs};
+      if (verify_best.mhs <= 0 || better_than(c, verify_best)) verify_best = c;
+    }
+    if (verify_best.mhs > 0) best = verify_best;
+  }
+
+  // Phase 7: if still below target, one more micro-polish around verified best (±16 intensity, step 1)
+  if (best.mhs < kTargetMhs && !stop_flag.load()) {
+    log_info("  phase7 micro-polish (still below " + std::to_string(kTargetGhs) + " GH/s) …");
+    const unsigned bi = best.cfg.intensity;
+    const int lo = (bi == 0) ? 1 : std::max(1, static_cast<int>(bi) - 16);
+    const int hi = (bi == 0) ? 64 : std::min(512, static_cast<int>(bi) + 16);
+    Cand polish = best;
+    for (int v = lo; v <= hi; ++v) {
+      if (stop_flag.load()) break;
+      GpuTune cfg = best.cfg;
+      cfg.intensity = static_cast<unsigned>(v);
+      cfg.batch = verify_batch;
+      const double mhs = try_cfg(cfg, verify_batch, 5, 2);
+      if (mhs <= 0) continue;
+      Cand c{cfg, mhs};
+      if (better_than(c, polish)) {
+        log_info("  polish intensity=" + std::to_string(v) + " => " + std::to_string(mhs) +
+                 " MH/s");
+        polish = c;
+      }
+    }
+    // Also re-check intensity=0 (full-span)
+    {
+      GpuTune cfg = best.cfg;
+      cfg.intensity = 0;
+      cfg.batch = verify_batch;
+      const double mhs = try_cfg(cfg, verify_batch, 5, 2);
+      if (mhs > 0) {
+        Cand c{cfg, mhs};
+        if (better_than(c, polish)) polish = c;
+      }
+    }
+    if (better_than(polish, best)) best = polish;
+
+    // Final confirm of winner
+    {
+      GpuTune cfg = best.cfg;
+      cfg.batch = verify_batch;
+      const double mhs = try_cfg(cfg, verify_batch, 7, 3);
+      if (mhs > 0) {
+        best.mhs = mhs;
+        best.cfg.batch = verify_batch;
+        log_info("  final confirm => " + std::to_string(mhs) + " MH/s (" +
+                 std::to_string(mhs / 1000.0) + " GH/s)");
+      }
     }
   }
 
@@ -1342,6 +1531,14 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
   d.tuned = true;
   d.last_mhs.store(best.mhs);
   const double ghs = best.mhs / 1000.0;
+  if (best.mhs >= kTargetMhs) {
+    log_info("autotune OK target met gpu=" + d.name + " => " + std::to_string(ghs) + " GH/s (≥ " +
+             std::to_string(kTargetGhs) + ")");
+  } else {
+    log_warn("autotune BEST gpu=" + d.name + " => " + std::to_string(ghs) + " GH/s — below target " +
+             std::to_string(kTargetGhs) +
+             " GH/s (likely near INT ALU ceiling; OC / cooler silicon may be required)");
+  }
   log_info("autotune best gpu=" + d.name + " local=" + std::to_string(best.cfg.local) +
            " intensity=" + std::to_string(best.cfg.intensity) +
            " unroll=" + std::to_string(best.cfg.unroll) + unroll_tag(best.cfg.unroll) +

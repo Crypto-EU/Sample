@@ -146,7 +146,8 @@ class OpenClBackend {
   std::string kernel_source_;
 
   double bench_launch(Dev& d, const PreparedJob& job, uint64_t start, uint64_t count,
-                      const GpuTune& cfg, std::atomic<bool>& stop_flag);
+                      const GpuTune& cfg, std::atomic<bool>& stop_flag, int timed_passes = 3,
+                      int warm_passes = 2);
   static size_t calc_global(const Dev& d, size_t local, unsigned intensity, uint64_t count,
                             unsigned unroll);
   void* pick_kernel(Dev& d, unsigned unroll) const;

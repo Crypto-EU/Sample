@@ -185,7 +185,7 @@ static unsigned unroll_period(unsigned u) {
 static const char* unroll_tag(unsigned u) {
   u = normalize_unroll(u);
   if (u == 2) return " (ilp2)";
-  if (u == 3) return " (c_u32/hasher)";
+  if (u == 3) return " (u32/hasher)";
   if (u == 4) return " (ilp4)";
   if (u == 8) return " (u8)";
   if (u == 14) return " (u4)";
@@ -596,8 +596,9 @@ void* OpenClBackend::pick_kernel(Dev& d, unsigned unroll) const {
   return d.kernel_hi32_u1;
 }
 
-bool OpenClBackend::is_const_blob_kernel(unsigned unroll) const {
-  return normalize_unroll(unroll) == 3;
+bool OpenClBackend::is_const_blob_kernel(unsigned /*unroll*/) const {
+  // c_u32 no longer uses a constant/global Hi32 blob — scalar args only.
+  return false;
 }
 
 int OpenClBackend::set_const_hi32_args(void* ker_v, void* hi_mem_v, uint64_t start, uint64_t count,
@@ -843,30 +844,25 @@ std::vector<ShareCandidate> OpenClBackend::scan(int device_index, uint64_t start
   auto& d = *devices_[static_cast<size_t>(device_index)];
   cl_command_queue q = static_cast<cl_command_queue>(d.queue);
   const cl_uint found_zero = 0;
+  ResultBlobHost zero_res{};
+  (void)found_zero;
 
   auto process_result = [&](const ResultBlobHost& result) {
     if (!result.found) return;
     ShareCandidate s;
     s.nonce_hex = format_classic_nonce(result.counter);
-    for (int i = 0; i < 8; ++i) {
-      s.hash[i * 4 + 0] = static_cast<uint8_t>((result.hash[i] >> 24) & 0xff);
-      s.hash[i * 4 + 1] = static_cast<uint8_t>((result.hash[i] >> 16) & 0xff);
-      s.hash[i * 4 + 2] = static_cast<uint8_t>((result.hash[i] >> 8) & 0xff);
-      s.hash[i * 4 + 3] = static_cast<uint8_t>(result.hash[i] & 0xff);
-    }
     s.timestamp_us = job.timestamp_us;
     s.gpu_index = device_index;
     Hash256 verify{};
-    const bool cpu_ok = mine_hash_classic(job, result.counter, verify);
-    if (cpu_ok || hash_meets_target(s.hash, job.target)) {
-      if (hash_meets_target(verify, job.target)) {
-        s.hash = verify;
-      }
-      s.blockhash_hex = make_share_blockhash(job, s.nonce_hex, s.hash);
-      found.push_back(s);
-    } else {
+    // Only accept shares that CPU-recompute to a valid digest under target.
+    // (GPU digest is advisory — never trust it alone; prevents false submits.)
+    if (!mine_hash_classic(job, result.counter, verify)) {
       log_warn("OpenCL share failed CPU verify nonce=" + s.nonce_hex);
+      return;
     }
+    s.hash = verify;
+    s.blockhash_hex = make_share_blockhash(job, s.nonce_hex, s.hash);
+    found.push_back(s);
   };
 
   auto update_hashrate = [&](uint64_t hashed, double sec) {
@@ -896,7 +892,7 @@ std::vector<ShareCandidate> OpenClBackend::scan(int device_index, uint64_t start
     cl_mem res_prev = static_cast<cl_mem>(d.res_ping ? d.res_mem : d.res_mem_b);
 
     cl_int rc =
-        clEnqueueWriteBuffer(q, res_cur, CL_FALSE, 0, sizeof(found_zero), &found_zero, 0, nullptr,
+        clEnqueueWriteBuffer(q, res_cur, CL_FALSE, 0, sizeof(ResultBlobHost), &zero_res, 0, nullptr,
                              nullptr);
     if (rc != CL_SUCCESS) {
       log_warn("clEnqueueWriteBuffer(res) rc=" + std::to_string(rc));

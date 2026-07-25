@@ -20,7 +20,7 @@ namespace {
 std::atomic<bool> g_stop{false};
 void on_signal(int) { g_stop = true; }
 
-constexpr const char* kVersion = "1.0.20";
+constexpr const char* kVersion = "1.0.21";
 }  // namespace
 
 static void usage(const char* argv0) {
@@ -41,7 +41,7 @@ static void usage(const char* argv0) {
       << "  --autotune                        Per-GPU OpenCL tune (default: on)\n"
       << "  --no-autotune                     Skip autotune; use defaults / cache\n"
       << "  --autotune-force                  Retune even if cache exists\n"
-      << "  --autotune-cache PATH             Default: /tmp/1miner-autotune-1.0.20.json\n"
+      << "  --autotune-cache PATH             Default: /tmp/1miner-autotune-1.0.21.json\n"
       << "  --help\n\n"
       << "HiveOS example:\n"
       << "  ./1miner --pool nl.rabbitminer.cc:1901 --wallet WALLET.worker\n"
@@ -56,7 +56,7 @@ int main(int argc, char** argv) {
   std::string worker;
   std::string nonce_mode_s = "classic";
   std::string stats_file = "/tmp/saseul-miner-stats.json";
-  std::string autotune_cache = "/tmp/1miner-autotune-1.0.20.json";
+  std::string autotune_cache = "/tmp/1miner-autotune-1.0.21.json";
   bool do_autotune = true;
   bool force_autotune = false;
   std::vector<int> devices;

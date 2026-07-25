@@ -542,43 +542,16 @@ __kernel void mine_classic_hi32_ilp4(HI32_SCALAR_ARGS) {
   }
 }
 
-// hasher-style packed constants in constant memory (few kernel args → better occupancy).
-typedef struct {
-  uint mid[8];
-  uint wr[8];
-  uint tgt[8];
-  uint fw0, fw1, fw2, fw3, fw4, h1_lo;
-  uint A5c, E5c;
-  uint pre_w0, pre_w1, pre_w2, pre_w3;
-  uint pre_c20, pre_s21;
-  uint _pad0, _pad1;
-} Hi32Blob;
-
-// Closest to hasher saseul_ocl_tail14_hi32_r5_lut_u32: constant blob, uint indices, LUT hex,
-// WG hint 256. Autotune unroll==3 selects this.
+// Closest to hasher saseul_ocl_tail14_hi32_r5_lut_u32 loop shape, but with scalar args
+// (not __constant buffer — AMD constant-cache stale reads caused false shares).
+// Autotune unroll==3 selects this.
 __attribute__((work_group_size_hint(256, 1, 1)))
-__kernel void mine_classic_hi32_c_u32(__constant const Hi32Blob* restrict blob,
-                                      ulong start_counter,
-                                      ulong count64,
-                                      __global ResultBlob* result) {
+__kernel void mine_classic_hi32_c_u32(HI32_SCALAR_ARGS) {
+  (void)wr3; (void)wr7;
   const uint gid = (uint)get_global_id(0);
   const uint stride = (uint)get_global_size(0);
-  const uint limit = (uint)count64;
+  const uint limit = (uint)count;
   const uint start_lo = (uint)start_counter;
-
-  const uint mid0 = blob->mid[0], mid1 = blob->mid[1], mid2 = blob->mid[2], mid3 = blob->mid[3];
-  const uint mid4 = blob->mid[4], mid5 = blob->mid[5], mid6 = blob->mid[6], mid7 = blob->mid[7];
-  const uint wr0 = blob->wr[0], wr1 = blob->wr[1], wr2 = blob->wr[2], wr3 = blob->wr[3];
-  const uint wr4 = blob->wr[4], wr5 = blob->wr[5], wr6 = blob->wr[6], wr7 = blob->wr[7];
-  (void)wr3; (void)wr7;
-  const uint t0 = blob->tgt[0], t1 = blob->tgt[1], t2 = blob->tgt[2], t3 = blob->tgt[3];
-  const uint t4 = blob->tgt[4], t5 = blob->tgt[5], t6 = blob->tgt[6], t7 = blob->tgt[7];
-  const uint fw0 = blob->fw0, fw1 = blob->fw1, fw2 = blob->fw2, fw3 = blob->fw3, fw4 = blob->fw4;
-  const uint h1_lo = blob->h1_lo;
-  const uint A5c = blob->A5c, E5c = blob->E5c;
-  const uint pre_w0 = blob->pre_w0, pre_w1 = blob->pre_w1, pre_w2 = blob->pre_w2, pre_w3 = blob->pre_w3;
-  const uint pre_c20 = blob->pre_c20, pre_s21 = blob->pre_s21;
-
   uint found_poll = 0u;
   for (uint idx = gid; idx < limit; idx += stride) {
     if (SHOULD_STOP(found_poll, result)) return;
@@ -591,6 +564,18 @@ __kernel void mine_classic_hi32_c_u32(__constant const Hi32Blob* restrict blob,
                 ((hx3 & 0xFFFFu) << 16) | 0x00008000u);
   }
 }
+
+// hasher-style packed constants (kept for optional experiments; not used by c_u32 anymore).
+typedef struct {
+  uint mid[8];
+  uint wr[8];
+  uint tgt[8];
+  uint fw0, fw1, fw2, fw3, fw4, h1_lo;
+  uint A5c, E5c;
+  uint pre_w0, pre_w1, pre_w2, pre_w3;
+  uint pre_c20, pre_s21;
+  uint _pad0, _pad1;
+} Hi32Blob;
 
 __attribute__((work_group_size_hint(256, 1, 1)))
 __kernel void mine_classic_fast(__global const JobBlob* job,

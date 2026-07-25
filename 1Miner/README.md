@@ -27,7 +27,7 @@ HiveOS-Archiv:
 
 ```bash
 1Miner/scripts/package-hive.sh
-# → 1Miner/releases/1miner-hive-1.0.8.tar.gz
+# → 1Miner/releases/1miner-hive-1.0.9.tar.gz
 ```
 
 ## Beispiele
@@ -43,7 +43,7 @@ HiveOS-Archiv:
 - **Miner:** Custom  
 - **Name:** `1miner-hive`  
 - **Installation URL:**  
-  `https://raw.githubusercontent.com/Crypto-EU/Sample/cursor/1miner-amd-hiveos-3705/1Miner/releases/1miner-hive-1.0.8.tar.gz`  
+  `https://raw.githubusercontent.com/Crypto-EU/Sample/cursor/1miner-amd-hiveos-3705/1Miner/releases/1miner-hive-1.0.9.tar.gz`  
 - **Pool URL:** z. B. `nl.rabbitminer.cc:1901`  
 - **Wallet template:** `%WAL%.%WORKER_NAME%`  
 - **Extra config:** leer lassen, oder z. B. `--device 0,1` / `--nonce-mode latehex`  
@@ -58,6 +58,6 @@ HiveOS-Archiv:
 
 ## Hinweis
 
-1Miner v1.0.8 folgt dem hasher 5.2 PoW/Submit-Pfad und nutzt einen **Fast-Path OpenCL-Kernel** (Word-Assembly, vorberechnete SHA-Runden, AMD-Intrinsics, hi32-Fenster, persistente Buffers).
+1Miner v1.0.9 folgt dem hasher 5.2 PoW/Submit-Pfad und nutzt einen **Fast-Path OpenCL-Kernel**. Das HiveOS-Paket wird gegen **Ubuntu 20.04 (GLIBC 2.31)** gebaut, damit es auf HiveOS läuft.
 
 Ohne AMD-OpenCL-Gerät beendet 1Miner mit Fehler. NVIDIA- und CPU-Backends sind absichtlich deaktiviert.

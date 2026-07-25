@@ -19,7 +19,7 @@ namespace {
 std::atomic<bool> g_stop{false};
 void on_signal(int) { g_stop = true; }
 
-constexpr const char* kVersion = "1.0.8";
+constexpr const char* kVersion = "1.0.9";
 }  // namespace
 
 static void usage(const char* argv0) {

@@ -161,6 +161,22 @@ int main() {
       return 1;
     }
 
+    // W20/W21 crumbs used by kernel: pre_c20 + SSIG0(w5), pre_s21 + SSIG0(w6) + w5.
+    wsch[20] = ssig1(wsch[18]) + wsch[13] + ssig0(wsch[5]) + wsch[4];
+    wsch[21] = ssig1(wsch[19]) + wsch[14] + ssig0(wsch[6]) + wsch[5];
+    // With w8..w14=0: W20 = SSIG1(W18)+SSIG0(w5)+w4; W21 = SSIG1(W19)+SSIG0(w6)+w5.
+    const uint32_t pre_c20 = ssig1(pre2) + fw4;
+    const uint32_t pre_s21 = ssig1(pre3);
+    if (pre_c20 + ssig0(block[5]) != wsch[20] ||
+        pre_s21 + ssig0(block[6]) + block[5] != wsch[21]) {
+      std::fprintf(stderr, "FAIL trial %d: pre_c20/pre_s21 vs schedule\n", trial);
+      return 1;
+    }
+    if (ssig0(0x000004f0u) != 0xe13c0097u) {
+      std::fprintf(stderr, "FAIL trial %d: SSIG0_BITLEN constant\n", trial);
+      return 1;
+    }
+
     const uint32_t pre[4] = {pre0, pre1, pre2, pre3};
     uint32_t fast[8];
     fast_finish(wr4, block, A5c, E5c, pre, fast);

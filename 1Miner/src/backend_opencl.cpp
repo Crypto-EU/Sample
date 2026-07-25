@@ -165,15 +165,31 @@ static_assert(sizeof(JobBlobHost) == 200, "JobBlobHost size");
 static_assert(sizeof(ResultBlobHost) == 48, "ResultBlobHost size");
 
 static unsigned normalize_unroll(unsigned u) {
+  if (u == 14) return 14;  // sequential mine_classic_hi32 (u4)
   if (u >= 8) return 8;
-  if (u >= 4) return 4;
-  if (u == 2) return 2;  // ilp2 kernel
+  if (u >= 4) return 4;  // ilp4
+  if (u == 2) return 2;  // ilp2
   return 1;
 }
 
+// Work-item nonce stride / alignment period.
+static unsigned unroll_period(unsigned u) {
+  u = normalize_unroll(u);
+  return (u == 14) ? 4u : u;
+}
+
+static const char* unroll_tag(unsigned u) {
+  u = normalize_unroll(u);
+  if (u == 2) return " (ilp2)";
+  if (u == 4) return " (ilp4)";
+  if (u == 8) return " (u8)";
+  if (u == 14) return " (u4)";
+  return "";
+}
+
 static uint64_t align_count_to_unroll(uint64_t count, unsigned unroll) {
-  unroll = normalize_unroll(unroll);
-  return count - (count % unroll);
+  const unsigned period = unroll_period(unroll);
+  return count - (count % period);
 }
 
 OpenClBackend::OpenClBackend() = default;
@@ -188,6 +204,7 @@ OpenClBackend::~OpenClBackend() {
     if (d->kernel_hi32) clReleaseKernel(static_cast<cl_kernel>(d->kernel_hi32));
     if (d->kernel_hi32_u8) clReleaseKernel(static_cast<cl_kernel>(d->kernel_hi32_u8));
     if (d->kernel_hi32_ilp2) clReleaseKernel(static_cast<cl_kernel>(d->kernel_hi32_ilp2));
+    if (d->kernel_hi32_ilp4) clReleaseKernel(static_cast<cl_kernel>(d->kernel_hi32_ilp4));
     if (d->kernel) clReleaseKernel(static_cast<cl_kernel>(d->kernel));
     if (d->program) clReleaseProgram(static_cast<cl_program>(d->program));
     if (d->queue) clReleaseCommandQueue(static_cast<cl_command_queue>(d->queue));
@@ -384,12 +401,25 @@ bool OpenClBackend::init(std::string& err) {
         clReleaseContext(ctx);
         continue;
       }
+      cl_kernel ker_hi_ilp4 = clCreateKernel(prog, "mine_classic_hi32_ilp4", &rc);
+      if (rc != CL_SUCCESS) {
+        clReleaseKernel(ker_hi_ilp2);
+        clReleaseKernel(ker_hi_u8);
+        clReleaseKernel(ker_hi_u1);
+        clReleaseKernel(ker_hi);
+        clReleaseKernel(ker);
+        clReleaseProgram(prog);
+        clReleaseCommandQueue(q);
+        clReleaseContext(ctx);
+        continue;
+      }
 
       JobBlobHost zjob{};
       ResultBlobHost zres{};
       cl_mem job_mem =
           clCreateBuffer(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(zjob), &zjob, &rc);
       if (rc != CL_SUCCESS || !job_mem) {
+        clReleaseKernel(ker_hi_ilp4);
         clReleaseKernel(ker_hi_ilp2);
         clReleaseKernel(ker_hi_u8);
         clReleaseKernel(ker_hi_u1);
@@ -404,6 +434,7 @@ bool OpenClBackend::init(std::string& err) {
           clCreateBuffer(ctx, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(zres), &zres, &rc);
       if (rc != CL_SUCCESS || !res_mem) {
         clReleaseMemObject(job_mem);
+        clReleaseKernel(ker_hi_ilp4);
         clReleaseKernel(ker_hi_ilp2);
         clReleaseKernel(ker_hi_u8);
         clReleaseKernel(ker_hi_u1);
@@ -419,6 +450,7 @@ bool OpenClBackend::init(std::string& err) {
       if (rc != CL_SUCCESS || !res_mem_b) {
         clReleaseMemObject(res_mem);
         clReleaseMemObject(job_mem);
+        clReleaseKernel(ker_hi_ilp4);
         clReleaseKernel(ker_hi_ilp2);
         clReleaseKernel(ker_hi_u8);
         clReleaseKernel(ker_hi_u1);
@@ -446,6 +478,7 @@ bool OpenClBackend::init(std::string& err) {
       d->kernel_hi32_u1 = ker_hi_u1;
       d->kernel_hi32_u8 = ker_hi_u8;
       d->kernel_hi32_ilp2 = ker_hi_ilp2;
+      d->kernel_hi32_ilp4 = ker_hi_ilp4;
       d->job_mem = job_mem;
       d->res_mem = res_mem;
       d->res_mem_b = res_mem_b;
@@ -490,8 +523,8 @@ uint64_t OpenClBackend::tuned_batch(int i) const {
 size_t OpenClBackend::calc_global(const Dev& d, size_t local, unsigned intensity, uint64_t count,
                                   unsigned unroll) {
   if (local == 0) local = 64;
-  unroll = normalize_unroll(unroll);
-  uint64_t units = count / unroll;
+  const unsigned period = unroll_period(unroll);
+  uint64_t units = count / period;
   if (units == 0) units = 1;
   size_t global;
   if (intensity == 0) {
@@ -511,7 +544,8 @@ size_t OpenClBackend::calc_global(const Dev& d, size_t local, unsigned intensity
 void* OpenClBackend::pick_kernel(Dev& d, unsigned unroll) const {
   unroll = normalize_unroll(unroll);
   if (unroll == 8) return d.kernel_hi32_u8;
-  if (unroll == 4) return d.kernel_hi32;
+  if (unroll == 14) return d.kernel_hi32;       // sequential u4
+  if (unroll == 4) return d.kernel_hi32_ilp4;   // claim-only ILP4
   if (unroll == 2) return d.kernel_hi32_ilp2;
   return d.kernel_hi32_u1;
 }
@@ -543,6 +577,8 @@ int OpenClBackend::set_scalar_hi32_args(void* ker_v, const Hi32Launch& L, uint64
   rc |= clSetKernelArg(ker, arg++, sizeof(cl_uint), &L.pre_w1);
   rc |= clSetKernelArg(ker, arg++, sizeof(cl_uint), &L.pre_w2);
   rc |= clSetKernelArg(ker, arg++, sizeof(cl_uint), &L.pre_w3);
+  rc |= clSetKernelArg(ker, arg++, sizeof(cl_uint), &L.pre_c20);
+  rc |= clSetKernelArg(ker, arg++, sizeof(cl_uint), &L.pre_s21);
   rc |= clSetKernelArg(ker, arg++, sizeof(cl_ulong), &start);
   rc |= clSetKernelArg(ker, arg++, sizeof(cl_ulong), &count);
   rc |= clSetKernelArg(ker, arg++, sizeof(cl_mem), &res_mem);
@@ -629,6 +665,10 @@ bool OpenClBackend::fill_hi32_launch(Dev& d, const PreparedJob& job, uint64_t st
   d.hi.pre_w1 = ssig1(0x000004f0u) + ssig0(d.hi.fw2) + d.hi.fw1;
   d.hi.pre_w2 = ssig1(d.hi.pre_w0) + ssig0(d.hi.fw3) + d.hi.fw2;
   d.hi.pre_w3 = ssig1(d.hi.pre_w1) + ssig0(d.hi.fw4) + d.hi.fw3;
+  // W20 = SSIG1(pre_w2) + SSIG0(w5) + fw4 → pre_c20 + SSIG0(w5)
+  // W21 = SSIG1(pre_w3) + SSIG0(w6) + w5 → pre_s21 + SSIG0(w6) + w5
+  d.hi.pre_c20 = ssig1(d.hi.pre_w2) + d.hi.fw4;
+  d.hi.pre_s21 = ssig1(d.hi.pre_w3);
   d.hi.valid = true;
 
   if (out_blob) *out_blob = blob;
@@ -993,10 +1033,10 @@ bool OpenClBackend::load_tune_cache(const std::string& path) {
     d.tune.intensity = intensity;
     {
       const uint64_t un = find_num("unroll");
-      if (un == 1 || un == 2 || un == 4 || un == 8) {
+      if (un == 1 || un == 2 || un == 4 || un == 8 || un == 14) {
         d.tune.unroll = static_cast<unsigned>(un);
       } else if (find_bool("u4")) {
-        d.tune.unroll = 4;  // legacy cache
+        d.tune.unroll = 14;  // legacy sequential u4
       } else {
         d.tune.unroll = 1;
       }
@@ -1051,10 +1091,11 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
                                  std::atomic<bool>& stop_flag) {
   log_info("autotune start gpu[" + std::to_string(di) + "]=" + d.name +
            " cu=" + std::to_string(d.compute_units) + " max_wg=" + std::to_string(d.max_work_group) +
-           " — prefer max raw MH/s (Navi10-class peak ~3 GH/s; round-5/W precompute targets higher)");
+           " — max raw MH/s (Navi10 ~3 GH/s; ILP4 + W20/21 precompute)");
 
   const size_t locals[] = {32, 64, 128, 256};
-  const unsigned unrolls[] = {1, 2, 4, 8};  // 2 = ilp2 kernel
+  // 1=u1, 2=ilp2, 4=ilp4, 14=seq u4, 8=u8
+  const unsigned unrolls[] = {1, 2, 4, 14, 8};
   const unsigned target_wpi[] = {64, 128, 256, 512, 1024, 2048};
   // Fixed intensity grid (low + high) in addition to WPI-derived.
   const unsigned intensity_grid[] = {1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 0};
@@ -1122,7 +1163,7 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
       // WPI-derived intensities
       for (unsigned wpi : target_wpi) {
         if (stop_flag.load()) break;
-        const uint64_t units = probe_batch / unroll;
+        const uint64_t units = probe_batch / unroll_period(unroll);
         const uint64_t denom = static_cast<uint64_t>(wpi) * d.compute_units * local;
         unsigned intensity = 1;
         if (denom > 0) {
@@ -1141,8 +1182,7 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
         if (mhs > 0) {
           log_info("  try local=" + std::to_string(local) +
                    " intensity=" + std::to_string(intensity) +
-                   " unroll=" + std::to_string(unroll) +
-                   (unroll == 2 ? " (ilp2)" : "") +
+                   " unroll=" + std::to_string(unroll) + unroll_tag(unroll) +
                    " wpi~" + std::to_string(wpi) +
                    " => " + std::to_string(mhs) + " MH/s");
           consider(cfg, mhs);
@@ -1163,8 +1203,7 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
         if (mhs > 0) {
           log_info("  try local=" + std::to_string(local) +
                    " intensity=" + std::to_string(intensity) +
-                   " unroll=" + std::to_string(unroll) +
-                   (unroll == 2 ? " (ilp2)" : "") +
+                   " unroll=" + std::to_string(unroll) + unroll_tag(unroll) +
                    " => " + std::to_string(mhs) + " MH/s");
           consider(cfg, mhs);
         }
@@ -1305,8 +1344,7 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
   const double ghs = best.mhs / 1000.0;
   log_info("autotune best gpu=" + d.name + " local=" + std::to_string(best.cfg.local) +
            " intensity=" + std::to_string(best.cfg.intensity) +
-           " unroll=" + std::to_string(best.cfg.unroll) +
-           (best.cfg.unroll == 2 ? " (ilp2)" : "") +
+           " unroll=" + std::to_string(best.cfg.unroll) + unroll_tag(best.cfg.unroll) +
            " chunks=" + std::to_string(best.cfg.chunks) +
            " null_local=" + std::string(best.cfg.null_local ? "1" : "0") +
            " batch=" + std::to_string(best.cfg.batch) + " => " + std::to_string(best.mhs) +

@@ -124,11 +124,16 @@ __constant ushort HEX_PAIRS[256] = {
   w15 = SSIG1(w13)+w8+SSIG0(w0)+w15;  RSTEP(w15, 0xc67178f2u); /* K63 */ \
 } while (0)
 
-// Fast path: host-precomputed A5c/E5c skip full round-5 RSTEP; pre_w0..3 skip W16-19 SSIG.
-// wr0..wr7 = work_after_r4 (a0..h0). After r5: b=a0,c=b0,d=c0,f=e0,g=f0,h=g0; a=A5c+w5; e=E5c+w5.
+// SSIG0(0x000004f0u) — bitlen constant (compile-time).
+#define SSIG0_BITLEN 0xe13c0097u
+
+// Fast path: host A5c/E5c (skip r5), pre_w0..3 (W16-19), pre_c20/pre_s21 (W20/W21 crumbs).
+// wr0..wr7 = work_after_r4. After r5: b=a0,c=b0,d=c0,f=e0,g=f0,h=g0; a=A5c+w5; e=E5c+w5.
+// W0..W3 unused (pre_w*); W4=fw4 only needed until K20 rewrite.
 #define SHA256_FROM_R5_FAST(W0,W1,W2,W3,W4,W5,W6,W7) do { \
-  uint w0=(W0),w1=(W1),w2=(W2),w3=(W3),w4=(W4),w5=(W5),w6=(W6),w7=(W7); \
-  uint w8,w9,w10,w11,w12,w13,w14,w15; \
+  uint w4=(W4),w5=(W5),w6=(W6),w7=(W7); \
+  uint w0,w1,w2,w3,w8,w9,w10,w11,w12,w13,w14,w15; \
+  (void)(W0); (void)(W1); (void)(W2); (void)(W3); \
   a = A5c + w5; \
   e = E5c + w5; \
   b = wr0; c = wr1; d = wr2; \
@@ -147,8 +152,8 @@ __constant ushort HEX_PAIRS[256] = {
   w1  = pre_w1;                              RSTEP(w1,  0xefbe4786u); /* K17 */ \
   w2  = pre_w2;                              RSTEP(w2,  0x0fc19dc6u); /* K18 */ \
   w3  = pre_w3;                              RSTEP(w3,  0x240ca1ccu); /* K19 */ \
-  w4  = SSIG1(w2)+SSIG0(w5)+w4;              RSTEP(w4,  0x2de92c6fu); /* K20 */ \
-  w5  = SSIG1(w3)+SSIG0(w6)+w5;              RSTEP(w5,  0x4a7484aau); /* K21 */ \
+  w4  = pre_c20 + SSIG0(w5);                 RSTEP(w4,  0x2de92c6fu); /* K20 */ \
+  w5  = pre_s21 + SSIG0(w6) + w5;            RSTEP(w5,  0x4a7484aau); /* K21 */ \
   w6  = SSIG1(w4)+0x000004f0u+SSIG0(w7)+w6;  RSTEP(w6,  0x5cb0a9dcu); /* K22 */ \
   w7  = SSIG1(w5)+w0 + w7;                   RSTEP(w7,  0x76f988dau); /* K23 */ \
   w8  = SSIG1(w6)+w1;                        RSTEP(w8,  0x983e5152u); /* K24 */ \
@@ -157,7 +162,7 @@ __constant ushort HEX_PAIRS[256] = {
   w11 = SSIG1(w9)+w4;                        RSTEP(w11, 0xbf597fc7u); /* K27 */ \
   w12 = SSIG1(w10)+w5;                       RSTEP(w12, 0xc6e00bf3u); /* K28 */ \
   w13 = SSIG1(w11)+w6;                       RSTEP(w13, 0xd5a79147u); /* K29 */ \
-  w14 = SSIG1(w12)+w7+SSIG0(0x000004f0u);    RSTEP(w14, 0x06ca6351u); /* K30 */ \
+  w14 = SSIG1(w12)+w7+SSIG0_BITLEN;          RSTEP(w14, 0x06ca6351u); /* K30 */ \
   w15 = SSIG1(w13)+w8+SSIG0(w0)+0x000004f0u; RSTEP(w15, 0x14292967u); /* K31 */ \
   w0  = SSIG1(w14)+w9 +SSIG0(w1)+w0;  RSTEP(w0,  0x27b70a85u); \
   w1  = SSIG1(w15)+w10+SSIG0(w2)+w1;  RSTEP(w1,  0x2e1b2138u); \
@@ -394,6 +399,7 @@ static inline int digest_le_target_claim(__global ResultBlob* result, ulong ctr,
     uint fw0, uint fw1, uint fw2, uint fw3, uint fw4, uint h1_lo, \
     uint A5c, uint E5c, \
     uint pre_w0, uint pre_w1, uint pre_w2, uint pre_w3, \
+    uint pre_c20, uint pre_s21, \
     ulong start_counter, ulong count, \
     __global ResultBlob* result
 
@@ -486,6 +492,32 @@ __kernel void mine_classic_hi32_ilp2(HI32_SCALAR_ARGS) {
     const uint w7b = ((hx3c & 0xFFFFu) << 16) | 0x00008000u;
     TRY_HASH_R5_CLAIM(ctr0, w5a, w6a, w7a);
     TRY_HASH_R5_CLAIM(ctr1, w5b, w6b, w7b);
+  }
+}
+
+// Quad-nonce ILP (claim-only, no early return). Host guarantees count % 4 == 0.
+// Autotune unroll==4 selects this; unroll==14 keeps sequential mine_classic_hi32.
+__attribute__((work_group_size_hint(64, 1, 1)))
+__kernel void mine_classic_hi32_ilp4(HI32_SCALAR_ARGS) {
+  (void)wr3; (void)wr7;
+  const ulong gid = (ulong)get_global_id(0);
+  const ulong stride = (ulong)get_global_size(0);
+  for (ulong idx = gid * 4ul; idx < count; idx += stride * 4ul) {
+    const ulong ctr0 = start_counter + idx;
+    const uint lo0 = (uint)ctr0;
+    uint hx2b, hx3b;
+    encode_lo32_words(lo0, &hx2b, &hx3b);
+#pragma unroll
+    for (uint lane = 0u; lane < 4u; ++lane) {
+      const ulong ctr = ctr0 + (ulong)lane;
+      const uint lo = lo0 + lane;
+      uint hx2, hx3;
+      encode_lo32_from_base(lo0, lo, hx2b, hx3b, &hx2, &hx3);
+      TRY_HASH_R5_CLAIM(ctr,
+                        (h1_lo << 16) | ((hx2 >> 16) & 0xFFFFu),
+                        ((hx2 & 0xFFFFu) << 16) | ((hx3 >> 16) & 0xFFFFu),
+                        ((hx3 & 0xFFFFu) << 16) | 0x00008000u);
+    }
   }
 }
 

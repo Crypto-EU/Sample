@@ -70,7 +70,7 @@ struct JobBlobHost {
 struct GpuTune {
   size_t local = 64;
   unsigned intensity = 8;   // global ≈ cu * local * intensity; 0 = full-span
-  unsigned unroll = 1;      // 1, 2 (ilp2), 4, or 8 contiguous nonces per WI
+  unsigned unroll = 1;      // 1, 2=ilp2, 4=ilp4, 8=u8, 14=seq u4
   unsigned chunks = 1;
   bool null_local = false;
   uint64_t batch = 1ull << 28;
@@ -86,6 +86,8 @@ struct Hi32Launch {
   uint32_t A5c = 0, E5c = 0;
   // W schedule words 16..19 (depend only on fw0..fw4 + bitlen).
   uint32_t pre_w0 = 0, pre_w1 = 0, pre_w2 = 0, pre_w3 = 0;
+  // W20/W21 crumbs: w20 = pre_c20 + SSIG0(w5); w21 = pre_s21 + SSIG0(w6) + w5.
+  uint32_t pre_c20 = 0, pre_s21 = 0;
   bool valid = false;
 };
 
@@ -120,6 +122,7 @@ class OpenClBackend {
     void* kernel_hi32 = nullptr;     // scalar u4
     void* kernel_hi32_u8 = nullptr;  // scalar u8
     void* kernel_hi32_ilp2 = nullptr;  // dual-nonce ILP (unroll==2)
+    void* kernel_hi32_ilp4 = nullptr;  // quad-nonce ILP (unroll==4)
     void* job_mem = nullptr;         // only for fast fallback
     void* res_mem = nullptr;
     void* res_mem_b = nullptr;       // ping-pong

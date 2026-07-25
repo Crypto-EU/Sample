@@ -311,10 +311,8 @@ __kernel void mine_classic_hi32_u1(__global const JobBlob* job,
   const uint fw4 = ((h0 & 0xFFFFu) << 16) | ((h1 >> 16) & 0xFFFFu);
   const uint h1_lo = (h1 & 0xFFFFu);
 
-  // Rare-share path: poll infrequently (global volatile read is expensive on RDNA).
-  uint found_poll = 0u;
+  // Rare-share path: do not poll result->found mid-loop (global volatile kills RDNA).
   for (ulong idx = gid; idx < count; idx += stride) {
-    if (((++found_poll) & 4095u) == 0u && result->found) return;
     const ulong ctr = start_counter + idx;
     uint hx2, hx3;
     encode_lo32_words((uint)ctr, &hx2, &hx3);
@@ -351,10 +349,7 @@ __kernel void mine_classic_hi32(__global const JobBlob* job,
   const uint fw4 = ((h0 & 0xFFFFu) << 16) | ((h1 >> 16) & 0xFFFFu);
   const uint h1_lo = (h1 & 0xFFFFu);
 
-  uint found_poll = 0u;
   for (ulong idx = gid * 4ul; idx < count; idx += stride * 4ul) {
-    if (((++found_poll) & 2047u) == 0u && result->found) return;
-
 #pragma unroll
     for (uint lane = 0u; lane < 4u; ++lane) {
       const ulong ctr = start_counter + idx + (ulong)lane;
@@ -384,9 +379,7 @@ __kernel void mine_classic_fast(__global const JobBlob* job,
   const uint wr4 = job->work_after_r2[4], wr5 = job->work_after_r2[5], wr6 = job->work_after_r2[6], wr7 = job->work_after_r2[7];
   const uint b0 = job->block0[0], b1 = job->block0[1], b2 = job->block0[2], b3 = job->block0[3];
 
-  uint found_poll = 0u;
   for (ulong idx = gid; idx < count; idx += stride) {
-    if (((++found_poll) & 4095u) == 0u && result->found) return;
     const ulong ctr = start_counter + idx;
     uint nh0, nh1, nh2, nh3;
     encode_counter_words(ctr, &nh0, &nh1, &nh2, &nh3);

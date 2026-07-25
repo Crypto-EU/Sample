@@ -59,9 +59,11 @@ class CpuBackend {
 #ifdef ONE_MINER_HAS_OPENCL
 struct GpuTune {
   size_t local = 64;
-  unsigned intensity = 32;  // global ≈ cu * local * intensity
+  unsigned intensity = 64;  // global ≈ cu * local * intensity; 0 = full-span mode
   bool use_u4 = false;      // false = hi32_u1, true = hi32 (4-way)
-  uint64_t batch = 1ull << 24;
+  unsigned chunks = 1;      // split one batch into N back-to-back kernel launches
+  bool null_local = false;  // let the ICD pick local size
+  uint64_t batch = 1ull << 26;
   double mhs = 0;
 };
 
@@ -115,10 +117,14 @@ class OpenClBackend {
 
   // Timed kernel run; returns MH/s (0 on failure). Does not update share stats.
   double bench_launch(Dev& d, const PreparedJob& job, uint64_t start, uint64_t count,
-                      size_t local, unsigned intensity, bool use_u4,
-                      std::atomic<bool>& stop_flag);
+                      const GpuTune& cfg, std::atomic<bool>& stop_flag);
+  static size_t calc_global(const Dev& d, size_t local, unsigned intensity, uint64_t count,
+                            bool use_u4);
+  bool enqueue_hi32(Dev& d, void* ker, uint64_t start, uint64_t count, uint32_t h0, uint32_t h1,
+                    const GpuTune& cfg);
   bool load_tune_cache(const std::string& path);
   void save_tune_cache(const std::string& path) const;
+  void autotune_one(Dev& d, int di, const PreparedJob& job, std::atomic<bool>& stop_flag);
 };
 #endif
 

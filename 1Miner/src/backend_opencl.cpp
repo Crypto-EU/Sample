@@ -280,8 +280,13 @@ bool OpenClBackend::init(std::string& err) {
         continue;
       }
       rc = clBuildProgram(prog, 1, &dev,
-                          "-cl-std=CL1.2 -cl-mad-enable -cl-no-signed-zeros",
+                          "-cl-std=CL1.2 -cl-mad-enable -cl-no-signed-zeros "
+                          "-cl-uniform-work-group-size",
                           nullptr, nullptr);
+      if (rc != CL_SUCCESS) {
+        rc = clBuildProgram(prog, 1, &dev, "-cl-std=CL1.2 -cl-mad-enable -cl-no-signed-zeros",
+                            nullptr, nullptr);
+      }
       if (rc != CL_SUCCESS) {
         size_t log_size = 0;
         clGetProgramBuildInfo(prog, dev, CL_PROGRAM_BUILD_LOG, 0, nullptr, &log_size);
@@ -490,10 +495,19 @@ std::vector<ShareCandidate> OpenClBackend::scan(int device_index, uint64_t start
   }
 
   ResultBlobHost zero{};
-  rc = clEnqueueWriteBuffer(q, res_mem, CL_FALSE, 0, sizeof(zero), &zero, 0, nullptr, nullptr);
+  // Only need to clear `found`; hash/counter overwritten on claim.
+  const cl_uint found_zero = 0;
+  rc = clEnqueueWriteBuffer(q, res_mem, CL_FALSE, 0, sizeof(found_zero), &found_zero, 0, nullptr,
+                            nullptr);
   if (rc != CL_SUCCESS) {
     log_warn("clEnqueueWriteBuffer(res) rc=" + std::to_string(rc));
     return found;
+  }
+
+  // u4 kernel assumes count % 4 == 0 (no tail branches).
+  if (use_hi32 && d.tune.use_u4) {
+    count &= ~uint64_t{3};
+    if (count == 0) return found;
   }
 
   cl_kernel ker = nullptr;
@@ -625,11 +639,17 @@ double OpenClBackend::bench_launch(Dev& d, const PreparedJob& job, uint64_t star
   cl_command_queue q = static_cast<cl_command_queue>(d.queue);
   cl_mem job_mem = static_cast<cl_mem>(d.job_mem);
   cl_mem res_mem = static_cast<cl_mem>(d.res_mem);
-  ResultBlobHost zero{};
+  const cl_uint found_zero = 0;
   cl_int rc =
       clEnqueueWriteBuffer(q, job_mem, CL_FALSE, 0, sizeof(blob), &blob, 0, nullptr, nullptr);
-  rc |= clEnqueueWriteBuffer(q, res_mem, CL_FALSE, 0, sizeof(zero), &zero, 0, nullptr, nullptr);
+  rc |= clEnqueueWriteBuffer(q, res_mem, CL_FALSE, 0, sizeof(found_zero), &found_zero, 0, nullptr,
+                             nullptr);
   if (rc != CL_SUCCESS) return 0;
+
+  if (use_u4) {
+    count &= ~uint64_t{3};
+    if (count == 0) return 0;
+  }
 
   cl_kernel ker =
       static_cast<cl_kernel>(use_u4 ? d.kernel_hi32 : d.kernel_hi32_u1);
@@ -666,7 +686,8 @@ double OpenClBackend::bench_launch(Dev& d, const PreparedJob& job, uint64_t star
   double best_mhs = 0;
   for (int pass = 0; pass < 2; ++pass) {
     if (stop_flag.load()) break;
-    clEnqueueWriteBuffer(q, res_mem, CL_FALSE, 0, sizeof(zero), &zero, 0, nullptr, nullptr);
+    clEnqueueWriteBuffer(q, res_mem, CL_FALSE, 0, sizeof(found_zero), &found_zero, 0, nullptr,
+                         nullptr);
     const auto t0 = std::chrono::steady_clock::now();
     if (enqueue() != CL_SUCCESS) return best_mhs;
     clFinish(q);
@@ -782,8 +803,8 @@ void OpenClBackend::autotune(const PreparedJob& job, std::atomic<bool>& stop_fla
 
   // Coarse search first, then refine intensity around the winner.
   // Target: ~1–3 minutes per GPU on RX 5700 XT class cards.
-  const size_t locals[] = {64, 128, 256};
-  const unsigned coarse_intensity[] = {16, 32, 64, 96, 128, 192};
+  const size_t locals[] = {32, 64, 128, 256};
+  const unsigned coarse_intensity[] = {16, 32, 64, 96, 128, 192, 256};
   const uint64_t batches[] = {1ull << 22, 1ull << 24, 1ull << 25, 1ull << 26, 1ull << 27};  // 4M..128M
   const bool u4_opts[] = {false, true};
 

@@ -86,6 +86,11 @@ class OpenClBackend {
     unsigned compute_units = 1;
     std::atomic<double> last_mhs{0};
     std::atomic<uint64_t> total_hashes{0};
+    // Skip redundant job-buffer uploads when midstate/hi32 unchanged.
+    int64_t cached_ts = 0;
+    uint32_t cached_hi32 = 0xffffffffu;
+    std::string cached_header;
+    bool blob_on_device = false;
   };
   std::vector<std::unique_ptr<Dev>> devices_;
   std::string kernel_source_;

@@ -422,13 +422,13 @@ std::vector<ShareCandidate> OpenClBackend::scan(int device_index, uint64_t start
   const bool use_hi32 =
       ((start >> 32) == ((start + count - 1) >> 32)) && count <= 0xffffffffull;
   uint32_t h0 = 0, h1 = 0;
+  const uint32_t hi32 = static_cast<uint32_t>(start >> 32);
   if (use_hi32) {
-    encode_hi32_words(static_cast<uint32_t>(start >> 32), h0, h1);
+    encode_hi32_words(hi32, h0, h1);
     uint32_t w[16] = {};
     for (int i = 0; i < 16; ++i) w[i] = blob.block0[i];
     w[3] = (blob.block0[3] & 0xFFFF0000u) | ((h0 >> 16) & 0xFFFFu);
     w[4] = ((h0 & 0xFFFFu) << 16) | ((h1 >> 16) & 0xFFFFu);
-    // w5..w7 still zero here; rounds 0..4 only need w0..w4
     sha256_partial_work(blob.midstate, w, 5, blob.work_after_r4);
     blob.flags |= 2u;
   }
@@ -438,12 +438,22 @@ std::vector<ShareCandidate> OpenClBackend::scan(int device_index, uint64_t start
   cl_mem job_mem = static_cast<cl_mem>(d.job_mem);
   cl_mem res_mem = static_cast<cl_mem>(d.res_mem);
 
-  ResultBlobHost zero{};
-  rc = clEnqueueWriteBuffer(q, job_mem, CL_FALSE, 0, sizeof(blob), &blob, 0, nullptr, nullptr);
-  if (rc != CL_SUCCESS) {
-    log_warn("clEnqueueWriteBuffer(job) rc=" + std::to_string(rc));
-    return found;
+  const bool need_job_upload =
+      !d.blob_on_device || d.cached_ts != job.timestamp_us || d.cached_header != job.header_hash_hex ||
+      (use_hi32 && d.cached_hi32 != hi32) || !use_hi32;
+  if (need_job_upload) {
+    rc = clEnqueueWriteBuffer(q, job_mem, CL_FALSE, 0, sizeof(blob), &blob, 0, nullptr, nullptr);
+    if (rc != CL_SUCCESS) {
+      log_warn("clEnqueueWriteBuffer(job) rc=" + std::to_string(rc));
+      return found;
+    }
+    d.blob_on_device = true;
+    d.cached_ts = job.timestamp_us;
+    d.cached_header = job.header_hash_hex;
+    d.cached_hi32 = use_hi32 ? hi32 : 0xffffffffu;
   }
+
+  ResultBlobHost zero{};
   rc = clEnqueueWriteBuffer(q, res_mem, CL_FALSE, 0, sizeof(zero), &zero, 0, nullptr, nullptr);
   if (rc != CL_SUCCESS) {
     log_warn("clEnqueueWriteBuffer(res) rc=" + std::to_string(rc));
@@ -465,18 +475,19 @@ std::vector<ShareCandidate> OpenClBackend::scan(int device_index, uint64_t start
     return found;
   }
 
-  // Saturate the GPU: many wavefronts per CU.
-  size_t global = static_cast<size_t>(d.compute_units) * d.max_work_group * 32;
+  // RDNA/GCN: prefer local=64; flood CUs with many groups.
+  size_t local = 64;
+  if (d.max_work_group < local) local = d.max_work_group ? d.max_work_group : 64;
+  size_t global = static_cast<size_t>(d.compute_units) * local * 64;
   if (global < 262144) global = 262144;
+  // Round up so 4-way unroll coverage is clean, then clamp to count.
   if (global > static_cast<size_t>(count)) global = static_cast<size_t>(count);
-  if (global == 0) global = 1;
-  size_t local = d.max_work_group;
-  if (local > 256) local = 256;
-  if (local == 0) local = 64;
-  if (global < local) local = global;
-  global = (global / local) * local;
-  if (global == 0) {
-    global = local;
+  if (global == 0) global = local;
+  global = ((global + local - 1) / local) * local;
+  if (global > static_cast<size_t>(count)) {
+    // Keep a full multiple of local; leftover counters still covered by stride loop.
+    if (global >= local) global -= local;
+    if (global == 0) global = local;
   }
 
   const auto t0 = std::chrono::steady_clock::now();

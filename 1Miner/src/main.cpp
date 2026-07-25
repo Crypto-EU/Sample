@@ -19,7 +19,7 @@ namespace {
 std::atomic<bool> g_stop{false};
 void on_signal(int) { g_stop = true; }
 
-constexpr const char* kVersion = "1.0.10";
+constexpr const char* kVersion = "1.0.11";
 }  // namespace
 
 static void usage(const char* argv0) {
@@ -307,7 +307,7 @@ int main(int argc, char** argv) {
   for (int i = 0; i < ocl->device_count(); ++i) {
     if (!device_enabled(i)) continue;
     miners.emplace_back([&, i] {
-      const uint64_t batch = 1ull << 24;  // 16M — large GPU fills, hi32-friendly
+      const uint64_t batch = 1ull << 26;  // 64M hashes per launch
       PreparedJob prep;
       std::string prep_job_id;
       int64_t prep_ts = 0;
@@ -329,7 +329,7 @@ int main(int argc, char** argv) {
         const auto now_st = std::chrono::steady_clock::now();
         const bool job_changed = job.job_id != prep_job_id;
         const bool aged =
-            std::chrono::duration_cast<std::chrono::milliseconds>(now_st - prep_at).count() > 1500;
+            std::chrono::duration_cast<std::chrono::milliseconds>(now_st - prep_at).count() > 2500;
         if (job_changed || aged || prep_ts == 0) {
           const int64_t ts = pool_now_us();
           std::string perr;
@@ -342,7 +342,7 @@ int main(int argc, char** argv) {
           prep_ts = ts;
           prep_at = now_st;
         }
-        // Keep batches inside a single hi32 window when possible (fast kernel path).
+        // Prefer full hi32 windows for the fast kernel.
         uint64_t this_batch = batch;
         uint64_t start = counter.fetch_add(this_batch);
         const uint64_t room = (uint64_t{1} << 32) - (start & 0xffffffffull);

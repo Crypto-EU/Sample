@@ -77,6 +77,12 @@ static inline uint32_t bsig0(uint32_t x) {
 static inline uint32_t bsig1(uint32_t x) {
   return rotr32(x, 6) ^ rotr32(x, 11) ^ rotr32(x, 25);
 }
+static inline uint32_t ssig0(uint32_t x) {
+  return rotr32(x, 7) ^ rotr32(x, 18) ^ (x >> 3);
+}
+static inline uint32_t ssig1(uint32_t x) {
+  return rotr32(x, 17) ^ rotr32(x, 19) ^ (x >> 10);
+}
 
 static constexpr uint32_t kK256[64] = {
     0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu, 0x59f111f1u, 0x923f82a4u,
@@ -531,6 +537,12 @@ int OpenClBackend::set_scalar_hi32_args(void* ker_v, const Hi32Launch& L, uint64
   rc |= clSetKernelArg(ker, arg++, sizeof(cl_uint), &L.fw3);
   rc |= clSetKernelArg(ker, arg++, sizeof(cl_uint), &L.fw4);
   rc |= clSetKernelArg(ker, arg++, sizeof(cl_uint), &L.h1_lo);
+  rc |= clSetKernelArg(ker, arg++, sizeof(cl_uint), &L.A5c);
+  rc |= clSetKernelArg(ker, arg++, sizeof(cl_uint), &L.E5c);
+  rc |= clSetKernelArg(ker, arg++, sizeof(cl_uint), &L.pre_w0);
+  rc |= clSetKernelArg(ker, arg++, sizeof(cl_uint), &L.pre_w1);
+  rc |= clSetKernelArg(ker, arg++, sizeof(cl_uint), &L.pre_w2);
+  rc |= clSetKernelArg(ker, arg++, sizeof(cl_uint), &L.pre_w3);
   rc |= clSetKernelArg(ker, arg++, sizeof(cl_ulong), &start);
   rc |= clSetKernelArg(ker, arg++, sizeof(cl_ulong), &count);
   rc |= clSetKernelArg(ker, arg++, sizeof(cl_mem), &res_mem);
@@ -597,6 +609,26 @@ bool OpenClBackend::fill_hi32_launch(Dev& d, const PreparedJob& job, uint64_t st
   d.hi.fw3 = w[3];
   d.hi.fw4 = w[4];
   d.hi.h1_lo = h1 & 0xFFFFu;
+  // Round 5 closed form from work_after_r4 (a0..h0); matches kernel Ch/Maj/ROTR.
+  {
+    const uint32_t a0 = blob.work_after_r4[0];
+    const uint32_t b0 = blob.work_after_r4[1];
+    const uint32_t c0 = blob.work_after_r4[2];
+    const uint32_t d0 = blob.work_after_r4[3];
+    const uint32_t e0 = blob.work_after_r4[4];
+    const uint32_t f0 = blob.work_after_r4[5];
+    const uint32_t g0 = blob.work_after_r4[6];
+    const uint32_t h0 = blob.work_after_r4[7];
+    const uint32_t F5 = h0 + bsig1(e0) + ch(e0, f0, g0) + kK256[5];
+    const uint32_t G5 = bsig0(a0) + maj(a0, b0, c0);
+    d.hi.A5c = F5 + G5;  // a1 = A5c + w5
+    d.hi.E5c = d0 + F5;  // e1 = E5c + w5
+  }
+  // W[16..19] depend only on fw0..fw4 and bitlen (not nonce).
+  d.hi.pre_w0 = ssig0(d.hi.fw1) + d.hi.fw0;
+  d.hi.pre_w1 = ssig1(0x000004f0u) + ssig0(d.hi.fw2) + d.hi.fw1;
+  d.hi.pre_w2 = ssig1(d.hi.pre_w0) + ssig0(d.hi.fw3) + d.hi.fw2;
+  d.hi.pre_w3 = ssig1(d.hi.pre_w1) + ssig0(d.hi.fw4) + d.hi.fw3;
   d.hi.valid = true;
 
   if (out_blob) *out_blob = blob;
@@ -995,7 +1027,7 @@ bool OpenClBackend::load_tune_cache(const std::string& path) {
 
 void OpenClBackend::save_tune_cache(const std::string& path) const {
   std::ostringstream ss;
-  ss << "{\"version\":16,\"devices\":[";
+  ss << "{\"version\":17,\"devices\":[";
   for (size_t i = 0; i < devices_.size(); ++i) {
     const auto& d = *devices_[i];
     if (i) ss << ",";
@@ -1019,7 +1051,7 @@ void OpenClBackend::autotune_one(Dev& d, int di, const PreparedJob& job,
                                  std::atomic<bool>& stop_flag) {
   log_info("autotune start gpu[" + std::to_string(di) + "]=" + d.name +
            " cu=" + std::to_string(d.compute_units) + " max_wg=" + std::to_string(d.max_work_group) +
-           " — target max throughput (goal ≥5 GH/s per card)");
+           " — prefer max raw MH/s (Navi10-class peak ~3 GH/s; round-5/W precompute targets higher)");
 
   const size_t locals[] = {32, 64, 128, 256};
   const unsigned unrolls[] = {1, 2, 4, 8};  // 2 = ilp2 kernel

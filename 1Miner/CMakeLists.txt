@@ -28,6 +28,8 @@ target_link_libraries(1miner PRIVATE OpenSSL::SSL OpenSSL::Crypto Threads::Threa
 add_executable(pow_selftest tools/pow_selftest.cpp src/sha256.cpp src/pow.cpp)
 target_include_directories(pow_selftest PRIVATE src)
 
+add_executable(r5_fast_selfcheck tools/r5_fast_selfcheck.cpp)
+
 if(ONE_MINER_ENABLE_OPENCL)
   find_package(OpenCL)
   if(OpenCL_FOUND)

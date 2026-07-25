@@ -82,6 +82,10 @@ struct Hi32Launch {
   uint32_t wr[8]{};
   uint32_t tgt[8]{};
   uint32_t fw0 = 0, fw1 = 0, fw2 = 0, fw3 = 0, fw4 = 0, h1_lo = 0;
+  // Round-5 closed form: a1 = A5c + w5, e1 = E5c + w5 (from work_after_r4).
+  uint32_t A5c = 0, E5c = 0;
+  // W schedule words 16..19 (depend only on fw0..fw4 + bitlen).
+  uint32_t pre_w0 = 0, pre_w1 = 0, pre_w2 = 0, pre_w3 = 0;
   bool valid = false;
 };
 

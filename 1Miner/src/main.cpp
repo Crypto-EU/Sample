@@ -20,7 +20,7 @@ namespace {
 std::atomic<bool> g_stop{false};
 void on_signal(int) { g_stop = true; }
 
-constexpr const char* kVersion = "1.0.16";
+constexpr const char* kVersion = "1.0.17";
 }  // namespace
 
 static void usage(const char* argv0) {
@@ -41,7 +41,7 @@ static void usage(const char* argv0) {
       << "  --autotune                        Per-GPU OpenCL tune (default: on)\n"
       << "  --no-autotune                     Skip autotune; use defaults / cache\n"
       << "  --autotune-force                  Retune even if cache exists\n"
-      << "  --autotune-cache PATH             Default: /tmp/1miner-autotune-1.0.16.json\n"
+      << "  --autotune-cache PATH             Default: /tmp/1miner-autotune-1.0.17.json\n"
       << "  --help\n\n"
       << "HiveOS example:\n"
       << "  ./1miner --pool nl.rabbitminer.cc:1901 --wallet WALLET.worker\n"
@@ -56,7 +56,7 @@ int main(int argc, char** argv) {
   std::string worker;
   std::string nonce_mode_s = "classic";
   std::string stats_file = "/tmp/saseul-miner-stats.json";
-  std::string autotune_cache = "/tmp/1miner-autotune-1.0.16.json";
+  std::string autotune_cache = "/tmp/1miner-autotune-1.0.17.json";
   bool do_autotune = true;
   bool force_autotune = false;
   std::vector<int> devices;
@@ -132,6 +132,7 @@ int main(int argc, char** argv) {
   log_info(std::string("1Miner v") + kVersion +
            " AMD-only OpenCL + per-GPU autotune (hasher 5.2 PoW), nonce_mode=" +
            nonce_mode_name(mode));
+  log_info("peak class ~3 GH/s on Navi10-class; targeting higher with round-5 closed form + W16-19 host precompute");
 
 #ifndef ONE_MINER_HAS_OPENCL
   log_error("OpenCL support was not compiled into this binary");

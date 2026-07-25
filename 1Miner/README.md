@@ -27,7 +27,7 @@ HiveOS-Archiv:
 
 ```bash
 1Miner/scripts/package-hive.sh
-# → 1Miner/releases/1miner-hive-1.0.16.tar.gz
+# → 1Miner/releases/1miner-hive-1.0.17.tar.gz
 ```
 
 ## Beispiele
@@ -40,7 +40,9 @@ HiveOS-Archiv:
 
 ## Autotune (pro GPU)
 
-Beim Start misst 1Miner **jede AMD-Karte parallel** auf **maximale MH/s** (Ziel ≥5 GH/s/Karte): local, unroll (1/2=ilp2/4/8), Intensitäten 1–512 + WPI, multi-chunk, null-local, Batches 64M–1G. Median aus 3 Messungen, Long-Verify 512M–1G. Cache: `/tmp/1miner-autotune-1.0.16.json`.
+Beim Start misst 1Miner **jede AMD-Karte parallel** auf **maximale MH/s** (raw throughput): local, unroll (1/2=ilp2/4/8), Intensitäten 1–512 + WPI, multi-chunk, null-local, Batches 64M–1G. Median aus 3 Messungen, Long-Verify 512M–1G. Cache: `/tmp/1miner-autotune-1.0.17.json`.
+
+Navi10-Klasse liegt derzeit typisch bei **~3 GH/s/Karte**; 1.0.17 spart Round-5-RSTEP und W16–19-SSIG auf der GPU. **2.9→5 GH/s ist nicht garantiert** (~70% weniger Arbeit/Hash oder deutlich stärkere GPU nötig).
 
 | Flag | Wirkung |
 |------|---------|
@@ -57,7 +59,7 @@ HiveOS Extra config zum Retune: `--autotune-force`
 - **Miner:** Custom  
 - **Name:** `1miner-hive`  
 - **Installation URL:**  
-  `https://raw.githubusercontent.com/Crypto-EU/Sample/cursor/1miner-amd-hiveos-3705/1Miner/releases/1miner-hive-1.0.16.tar.gz`  
+  `https://raw.githubusercontent.com/Crypto-EU/Sample/cursor/1miner-amd-hiveos-3705/1Miner/releases/1miner-hive-1.0.17.tar.gz`  
 - **Pool URL:** z. B. `nl.rabbitminer.cc:1901`  
 - **Wallet template:** `%WAL%.%WORKER_NAME%`  
 - **Extra config:** `--autotune-force` (einmalig nach Update)
@@ -71,6 +73,6 @@ HiveOS Extra config zum Retune: `--autotune-force`
 
 ## Hinweis
 
-1Miner v1.0.16: max-throughput autotune, amd_bitalign ROTR (fallback portable), ilp2 dual-nonce kernel, large hi32 batches (≤1G), profiling-based MH/s, GH/s stats display.
+1Miner v1.0.17: round-5 closed form (A5c/E5c), host W16–19 precompute, incremental lo32 hex (u4/u8/ilp2), autotune cache v17, prefer raw MH/s.
 
 Ohne AMD-OpenCL-Gerät beendet 1Miner mit Fehler. NVIDIA- und CPU-Backends sind absichtlich deaktiviert.

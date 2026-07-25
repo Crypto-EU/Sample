@@ -59,6 +59,7 @@ __constant ushort HEX_PAIRS[256] = {
 // Hot-path SHA finish from round 5 with:
 //  - K[i] baked as immediates (no constant-buffer indexed loads)
 //  - w8..w14 start as 0, w15 = bitlen 0x4f0 → RSTEP0 + simplified early schedule
+// Reference path (full RSTEP from K5); kept for parity checks.
 #define SHA256_FROM_R5(W0,W1,W2,W3,W4,W5,W6,W7) do { \
   uint w0=(W0),w1=(W1),w2=(W2),w3=(W3),w4=(W4),w5=(W5),w6=(W6),w7=(W7); \
   uint w8,w9,w10,w11,w12,w13,w14,w15; \
@@ -80,6 +81,75 @@ __constant ushort HEX_PAIRS[256] = {
   w4  = SSIG1(w2)+SSIG0(w5)+w4;              RSTEP(w4,  0x2de92c6fu); /* K20 */ \
   w5  = SSIG1(w3)+SSIG0(w6)+w5;              RSTEP(w5,  0x4a7484aau); /* K21 */ \
   w6  = SSIG1(w4)+0x000004f0u+SSIG0(w7)+w6;  RSTEP(w6,  0x5cb0a9dcu); /* K22 w15 still bitlen */ \
+  w7  = SSIG1(w5)+w0 + w7;                   RSTEP(w7,  0x76f988dau); /* K23 */ \
+  w8  = SSIG1(w6)+w1;                        RSTEP(w8,  0x983e5152u); /* K24 */ \
+  w9  = SSIG1(w7)+w2;                        RSTEP(w9,  0xa831c66du); /* K25 */ \
+  w10 = SSIG1(w8)+w3;                        RSTEP(w10, 0xb00327c8u); /* K26 */ \
+  w11 = SSIG1(w9)+w4;                        RSTEP(w11, 0xbf597fc7u); /* K27 */ \
+  w12 = SSIG1(w10)+w5;                       RSTEP(w12, 0xc6e00bf3u); /* K28 */ \
+  w13 = SSIG1(w11)+w6;                       RSTEP(w13, 0xd5a79147u); /* K29 */ \
+  w14 = SSIG1(w12)+w7+SSIG0(0x000004f0u);    RSTEP(w14, 0x06ca6351u); /* K30 */ \
+  w15 = SSIG1(w13)+w8+SSIG0(w0)+0x000004f0u; RSTEP(w15, 0x14292967u); /* K31 */ \
+  w0  = SSIG1(w14)+w9 +SSIG0(w1)+w0;  RSTEP(w0,  0x27b70a85u); \
+  w1  = SSIG1(w15)+w10+SSIG0(w2)+w1;  RSTEP(w1,  0x2e1b2138u); \
+  w2  = SSIG1(w0)+w11+SSIG0(w3)+w2;   RSTEP(w2,  0x4d2c6dfcu); \
+  w3  = SSIG1(w1)+w12+SSIG0(w4)+w3;   RSTEP(w3,  0x53380d13u); \
+  w4  = SSIG1(w2)+w13+SSIG0(w5)+w4;   RSTEP(w4,  0x650a7354u); \
+  w5  = SSIG1(w3)+w14+SSIG0(w6)+w5;   RSTEP(w5,  0x766a0abbu); \
+  w6  = SSIG1(w4)+w15+SSIG0(w7)+w6;   RSTEP(w6,  0x81c2c92eu); \
+  w7  = SSIG1(w5)+w0 +SSIG0(w8)+w7;   RSTEP(w7,  0x92722c85u); \
+  w8  = SSIG1(w6)+w1 +SSIG0(w9)+w8;   RSTEP(w8,  0xa2bfe8a1u); \
+  w9  = SSIG1(w7)+w2 +SSIG0(w10)+w9;  RSTEP(w9,  0xa81a664bu); \
+  w10 = SSIG1(w8)+w3 +SSIG0(w11)+w10; RSTEP(w10, 0xc24b8b70u); \
+  w11 = SSIG1(w9)+w4 +SSIG0(w12)+w11; RSTEP(w11, 0xc76c51a3u); \
+  w12 = SSIG1(w10)+w5+SSIG0(w13)+w12; RSTEP(w12, 0xd192e819u); \
+  w13 = SSIG1(w11)+w6+SSIG0(w14)+w13; RSTEP(w13, 0xd6990624u); \
+  w14 = SSIG1(w12)+w7+SSIG0(w15)+w14; RSTEP(w14, 0xf40e3585u); \
+  w15 = SSIG1(w13)+w8+SSIG0(w0)+w15;  RSTEP(w15, 0x106aa070u); \
+  w0  = SSIG1(w14)+w9 +SSIG0(w1)+w0;  RSTEP(w0,  0x19a4c116u); \
+  w1  = SSIG1(w15)+w10+SSIG0(w2)+w1;  RSTEP(w1,  0x1e376c08u); \
+  w2  = SSIG1(w0)+w11+SSIG0(w3)+w2;   RSTEP(w2,  0x2748774cu); \
+  w3  = SSIG1(w1)+w12+SSIG0(w4)+w3;   RSTEP(w3,  0x34b0bcb5u); \
+  w4  = SSIG1(w2)+w13+SSIG0(w5)+w4;   RSTEP(w4,  0x391c0cb3u); \
+  w5  = SSIG1(w3)+w14+SSIG0(w6)+w5;   RSTEP(w5,  0x4ed8aa4au); \
+  w6  = SSIG1(w4)+w15+SSIG0(w7)+w6;   RSTEP(w6,  0x5b9cca4fu); \
+  w7  = SSIG1(w5)+w0 +SSIG0(w8)+w7;   RSTEP(w7,  0x682e6ff3u); \
+  w8  = SSIG1(w6)+w1 +SSIG0(w9)+w8;   RSTEP(w8,  0x748f82eeu); \
+  w9  = SSIG1(w7)+w2 +SSIG0(w10)+w9;  RSTEP(w9,  0x78a5636fu); \
+  w10 = SSIG1(w8)+w3 +SSIG0(w11)+w10; RSTEP(w10, 0x84c87814u); \
+  w11 = SSIG1(w9)+w4 +SSIG0(w12)+w11; RSTEP(w11, 0x8cc70208u); \
+  w12 = SSIG1(w10)+w5+SSIG0(w13)+w12; RSTEP(w12, 0x90befffau); \
+  w13 = SSIG1(w11)+w6+SSIG0(w14)+w13; RSTEP(w13, 0xa4506cebu); \
+  w14 = SSIG1(w12)+w7+SSIG0(w15)+w14; RSTEP(w14, 0xbef9a3f7u); \
+  w15 = SSIG1(w13)+w8+SSIG0(w0)+w15;  RSTEP(w15, 0xc67178f2u); /* K63 */ \
+} while (0)
+
+// Fast path: host-precomputed A5c/E5c skip full round-5 RSTEP; pre_w0..3 skip W16-19 SSIG.
+// wr0..wr7 = work_after_r4 (a0..h0). After r5: b=a0,c=b0,d=c0,f=e0,g=f0,h=g0; a=A5c+w5; e=E5c+w5.
+#define SHA256_FROM_R5_FAST(W0,W1,W2,W3,W4,W5,W6,W7) do { \
+  uint w0=(W0),w1=(W1),w2=(W2),w3=(W3),w4=(W4),w5=(W5),w6=(W6),w7=(W7); \
+  uint w8,w9,w10,w11,w12,w13,w14,w15; \
+  a = A5c + w5; \
+  e = E5c + w5; \
+  b = wr0; c = wr1; d = wr2; \
+  f = wr4; g = wr5; h = wr6; \
+  RSTEP(w6,  0x923f82a4u); /* K6 */ \
+  RSTEP(w7,  0xab1c5ed5u); /* K7 */ \
+  RSTEP0(    0xd807aa98u); /* K8  w8=0 */ \
+  RSTEP0(    0x12835b01u); /* K9 */ \
+  RSTEP0(    0x243185beu); /* K10 */ \
+  RSTEP0(    0x550c7dc3u); /* K11 */ \
+  RSTEP0(    0x72be5d74u); /* K12 */ \
+  RSTEP0(    0x80deb1feu); /* K13 */ \
+  RSTEP0(    0x9bdc06a7u); /* K14 */ \
+  RSTEP(0x000004f0u, 0xc19bf174u); /* K15 w15=bitlen */ \
+  w0  = pre_w0;                              RSTEP(w0,  0xe49b69c1u); /* K16 */ \
+  w1  = pre_w1;                              RSTEP(w1,  0xefbe4786u); /* K17 */ \
+  w2  = pre_w2;                              RSTEP(w2,  0x0fc19dc6u); /* K18 */ \
+  w3  = pre_w3;                              RSTEP(w3,  0x240ca1ccu); /* K19 */ \
+  w4  = SSIG1(w2)+SSIG0(w5)+w4;              RSTEP(w4,  0x2de92c6fu); /* K20 */ \
+  w5  = SSIG1(w3)+SSIG0(w6)+w5;              RSTEP(w5,  0x4a7484aau); /* K21 */ \
+  w6  = SSIG1(w4)+0x000004f0u+SSIG0(w7)+w6;  RSTEP(w6,  0x5cb0a9dcu); /* K22 */ \
   w7  = SSIG1(w5)+w0 + w7;                   RSTEP(w7,  0x76f988dau); /* K23 */ \
   w8  = SSIG1(w6)+w1;                        RSTEP(w8,  0x983e5152u); /* K24 */ \
   w9  = SSIG1(w7)+w2;                        RSTEP(w9,  0xa831c66du); /* K25 */ \
@@ -248,6 +318,17 @@ static inline void encode_lo32_words(uint lo, uint* out_h2, uint* out_h3) {
   *out_h3 = (p6 << 16) | p7;
 }
 
+// Patch low ASCII hex byte when only lo's low 8 bits differ from base (no byte carry).
+static inline void encode_lo32_from_base(uint lo0, uint lo, uint hx2b, uint hx3b,
+                                         uint* out_h2, uint* out_h3) {
+  if (((lo ^ lo0) & ~0xffu) == 0u) {
+    *out_h2 = hx2b;
+    *out_h3 = (hx3b & 0xFFFF0000u) | hex_pair_arith(lo & 255u);
+  } else {
+    encode_lo32_words(lo, out_h2, out_h3);
+  }
+}
+
 static inline void claim_hash(__global ResultBlob* result, ulong ctr,
                               uint d0, uint d1, uint d2, uint d3,
                               uint d4, uint d5, uint d6, uint d7) {
@@ -283,8 +364,8 @@ static inline int digest_le_target_claim(__global ResultBlob* result, ulong ctr,
 
 // Early-out on first limb (almost all rejects); only then materialize full digest.
 #define TRY_HASH_R5(CTR, W5, W6, W7) do { \
-  uint a = wr0, b = wr1, c = wr2, d = wr3, e = wr4, f = wr5, g = wr6, h = wr7; \
-  SHA256_FROM_R5(fw0, fw1, fw2, fw3, fw4, (W5), (W6), (W7)); \
+  uint a, b, c, d, e, f, g, h; \
+  SHA256_FROM_R5_FAST(fw0, fw1, fw2, fw3, fw4, (W5), (W6), (W7)); \
   const uint d0 = mid0 + a; \
   if (d0 <= t0) { \
     const uint d1 = mid1 + b, d2 = mid2 + c, d3 = mid3 + d; \
@@ -295,8 +376,8 @@ static inline int digest_le_target_claim(__global ResultBlob* result, ulong ctr,
 
 // Like TRY_HASH_R5 but never returns (for dual-nonce ILP — less WI divergence).
 #define TRY_HASH_R5_CLAIM(CTR, W5, W6, W7) do { \
-  uint a = wr0, b = wr1, c = wr2, d = wr3, e = wr4, f = wr5, g = wr6, h = wr7; \
-  SHA256_FROM_R5(fw0, fw1, fw2, fw3, fw4, (W5), (W6), (W7)); \
+  uint a, b, c, d, e, f, g, h; \
+  SHA256_FROM_R5_FAST(fw0, fw1, fw2, fw3, fw4, (W5), (W6), (W7)); \
   const uint d0 = mid0 + a; \
   if (d0 <= t0) { \
     const uint d1 = mid1 + b, d2 = mid2 + c, d3 = mid3 + d; \
@@ -311,11 +392,14 @@ static inline int digest_le_target_claim(__global ResultBlob* result, ulong ctr,
     uint wr0, uint wr1, uint wr2, uint wr3, uint wr4, uint wr5, uint wr6, uint wr7, \
     uint t0, uint t1, uint t2, uint t3, uint t4, uint t5, uint t6, uint t7, \
     uint fw0, uint fw1, uint fw2, uint fw3, uint fw4, uint h1_lo, \
+    uint A5c, uint E5c, \
+    uint pre_w0, uint pre_w1, uint pre_w2, uint pre_w3, \
     ulong start_counter, ulong count, \
     __global ResultBlob* result
 
 __attribute__((work_group_size_hint(64, 1, 1)))
 __kernel void mine_classic_hi32_u1(HI32_SCALAR_ARGS) {
+  (void)wr3; (void)wr7;
   const ulong gid = (ulong)get_global_id(0);
   const ulong stride = (ulong)get_global_size(0);
   for (ulong idx = gid; idx < count; idx += stride) {
@@ -332,14 +416,19 @@ __kernel void mine_classic_hi32_u1(HI32_SCALAR_ARGS) {
 // Host guarantees count % 4 == 0.
 __attribute__((work_group_size_hint(64, 1, 1)))
 __kernel void mine_classic_hi32(HI32_SCALAR_ARGS) {
+  (void)wr3; (void)wr7;
   const ulong gid = (ulong)get_global_id(0);
   const ulong stride = (ulong)get_global_size(0);
   for (ulong idx = gid * 4ul; idx < count; idx += stride * 4ul) {
+    const uint lo0 = (uint)(start_counter + idx);
+    uint hx2b, hx3b;
+    encode_lo32_words(lo0, &hx2b, &hx3b);
 #pragma unroll
     for (uint lane = 0u; lane < 4u; ++lane) {
       const ulong ctr = start_counter + idx + (ulong)lane;
+      const uint lo = lo0 + lane;
       uint hx2, hx3;
-      encode_lo32_words((uint)ctr, &hx2, &hx3);
+      encode_lo32_from_base(lo0, lo, hx2b, hx3b, &hx2, &hx3);
       TRY_HASH_R5(ctr,
                   (h1_lo << 16) | ((hx2 >> 16) & 0xFFFFu),
                   ((hx2 & 0xFFFFu) << 16) | ((hx3 >> 16) & 0xFFFFu),
@@ -351,14 +440,19 @@ __kernel void mine_classic_hi32(HI32_SCALAR_ARGS) {
 // Host guarantees count % 8 == 0.
 __attribute__((work_group_size_hint(64, 1, 1)))
 __kernel void mine_classic_hi32_u8(HI32_SCALAR_ARGS) {
+  (void)wr3; (void)wr7;
   const ulong gid = (ulong)get_global_id(0);
   const ulong stride = (ulong)get_global_size(0);
   for (ulong idx = gid * 8ul; idx < count; idx += stride * 8ul) {
+    const uint lo0 = (uint)(start_counter + idx);
+    uint hx2b, hx3b;
+    encode_lo32_words(lo0, &hx2b, &hx3b);
 #pragma unroll
     for (uint lane = 0u; lane < 8u; ++lane) {
       const ulong ctr = start_counter + idx + (ulong)lane;
+      const uint lo = lo0 + lane;
       uint hx2, hx3;
-      encode_lo32_words((uint)ctr, &hx2, &hx3);
+      encode_lo32_from_base(lo0, lo, hx2b, hx3b, &hx2, &hx3);
       TRY_HASH_R5(ctr,
                   (h1_lo << 16) | ((hx2 >> 16) & 0xFFFFu),
                   ((hx2 & 0xFFFFu) << 16) | ((hx3 >> 16) & 0xFFFFu),
@@ -372,20 +466,24 @@ __kernel void mine_classic_hi32_u8(HI32_SCALAR_ARGS) {
 // Host guarantees count % 2 == 0. Autotune unroll==2 selects this kernel.
 __attribute__((work_group_size_hint(64, 1, 1)))
 __kernel void mine_classic_hi32_ilp2(HI32_SCALAR_ARGS) {
+  (void)wr3; (void)wr7;
   const ulong gid = (ulong)get_global_id(0);
   const ulong stride = (ulong)get_global_size(0);
   for (ulong idx = gid * 2ul; idx < count; idx += stride * 2ul) {
     const ulong ctr0 = start_counter + idx;
     const ulong ctr1 = ctr0 + 1ul;
-    uint hx2a, hx3a, hx2b, hx3b;
-    encode_lo32_words((uint)ctr0, &hx2a, &hx3a);
-    encode_lo32_words((uint)ctr1, &hx2b, &hx3b);
+    const uint lo0 = (uint)ctr0;
+    uint hx2b, hx3b, hx2a, hx3a, hx2c, hx3c;
+    encode_lo32_words(lo0, &hx2b, &hx3b);
+    hx2a = hx2b;
+    hx3a = hx3b;
+    encode_lo32_from_base(lo0, lo0 + 1u, hx2b, hx3b, &hx2c, &hx3c);
     const uint w5a = (h1_lo << 16) | ((hx2a >> 16) & 0xFFFFu);
     const uint w6a = ((hx2a & 0xFFFFu) << 16) | ((hx3a >> 16) & 0xFFFFu);
     const uint w7a = ((hx3a & 0xFFFFu) << 16) | 0x00008000u;
-    const uint w5b = (h1_lo << 16) | ((hx2b >> 16) & 0xFFFFu);
-    const uint w6b = ((hx2b & 0xFFFFu) << 16) | ((hx3b >> 16) & 0xFFFFu);
-    const uint w7b = ((hx3b & 0xFFFFu) << 16) | 0x00008000u;
+    const uint w5b = (h1_lo << 16) | ((hx2c >> 16) & 0xFFFFu);
+    const uint w6b = ((hx2c & 0xFFFFu) << 16) | ((hx3c >> 16) & 0xFFFFu);
+    const uint w7b = ((hx3c & 0xFFFFu) << 16) | 0x00008000u;
     TRY_HASH_R5_CLAIM(ctr0, w5a, w6a, w7a);
     TRY_HASH_R5_CLAIM(ctr1, w5b, w6b, w7b);
   }

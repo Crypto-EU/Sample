@@ -276,7 +276,8 @@ bool OpenClBackend::init(std::string& err) {
         clReleaseContext(ctx);
         continue;
       }
-      rc = clBuildProgram(prog, 1, &dev, "-cl-std=CL1.2 -DSASEUL_AMD_OPENCL=1 -cl-mad-enable",
+      rc = clBuildProgram(prog, 1, &dev,
+                          "-cl-std=CL1.2 -cl-mad-enable -cl-no-signed-zeros",
                           nullptr, nullptr);
       if (rc != CL_SUCCESS) {
         size_t log_size = 0;

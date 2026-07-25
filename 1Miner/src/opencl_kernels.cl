@@ -5,7 +5,7 @@
 // Optimizations vs naive path:
 //  - final block built as uint words (no uchar[64] packing)
 //  - HEX_PAIRS LUT for nonce encoding
-//  - AMD bitselect / bitalign when available
+//  - portable ROTR/Ch/Maj (amd_bitalign breaks on some amd_comgr / RX 5000 builds)
 //  - fully unrolled SHA rounds with 16-word circular W schedule
 //  - optional precomputed working state after fixed early rounds (r2 / r4)
 //  - sparse polling of result->found to cut global-memory traffic
@@ -43,21 +43,16 @@ __constant ushort HEX_PAIRS[256] = {
     0x6630u,0x6631u,0x6632u,0x6633u,0x6634u,0x6635u,0x6636u,0x6637u,0x6638u,0x6639u,0x6661u,0x6662u,0x6663u,0x6664u,0x6665u,0x6666u
 };
 
-#if defined(SASEUL_AMD_OPENCL)
-#pragma OPENCL EXTENSION cl_amd_media_ops : enable
-#define ROTR32(x,n) amd_bitalign((x), (x), ((uint)(n) & 31u))
-#define Ch(x,y,z) bitselect((z), (y), (x))
-#define Maj(x,y,z) bitselect((x), (y), ((x) ^ (z)))
-#else
-#define ROTR32(x,n) (((x) >> ((uint)(n) & 31u)) | ((x) << ((32u - ((uint)(n) & 31u)) & 31u)))
-#define Ch(x,y,z) (((x)&(y))^((~(x))&(z)))
-#define Maj(x,y,z) (((x)&(y))^((x)&(z))^((y)&(z)))
-#endif
+// Portable SHA helpers — avoid amd_bitalign/bitselect which fail to resolve scalar
+// overloads on some AMD OpenCL (amd_comgr) toolchains used with gfx1010 etc.
+#define ROTR32(x,n) (((uint)(x) >> ((uint)(n) & 31u)) | ((uint)(x) << ((32u - ((uint)(n) & 31u)) & 31u)))
+#define Ch(x,y,z) (((uint)(z)) ^ (((uint)(x)) & (((uint)(y)) ^ ((uint)(z)))))
+#define Maj(x,y,z) ((((uint)(x)) & ((uint)(y))) | (((uint)(z)) & (((uint)(x)) | ((uint)(y)))))
 
 #define BSIG0(x) (ROTR32((x), 2u) ^ ROTR32((x), 13u) ^ ROTR32((x), 22u))
 #define BSIG1(x) (ROTR32((x), 6u) ^ ROTR32((x), 11u) ^ ROTR32((x), 25u))
-#define SSIG0(x) (ROTR32((x), 7u) ^ ROTR32((x), 18u) ^ ((x) >> 3))
-#define SSIG1(x) (ROTR32((x), 17u) ^ ROTR32((x), 19u) ^ ((x) >> 10))
+#define SSIG0(x) (ROTR32((x), 7u) ^ ROTR32((x), 18u) ^ (((uint)(x)) >> 3))
+#define SSIG1(x) (ROTR32((x), 17u) ^ ROTR32((x), 19u) ^ (((uint)(x)) >> 10))
 
 #define RSTEP(WI, KI) do { \
   uint t1 = h + BSIG1(e) + Ch(e,f,g) + (KI) + (WI); \
@@ -197,9 +192,10 @@ static inline int digest_le_target_claim(__global ResultBlob* result, ulong ctr,
 static inline void sha256_from_r3(
     uint w0, uint w1, uint w2, uint w3, uint w4, uint w5, uint w6, uint w7,
     uint w8, uint w9, uint w10, uint w11, uint w12, uint w13, uint w14, uint w15,
-    uint* a, uint* b, uint* c, uint* d, uint* e, uint* f, uint* g, uint* h) {
-  uint a0=*a,b0=*b,c0=*c,d0=*d,e0=*e,f0=*f,g0=*g,h0=*h;
-  uint a=a0,b=b0,c=c0,d=d0,e=e0,f=f0,g=g0,h=h0;
+    uint* out_a, uint* out_b, uint* out_c, uint* out_d,
+    uint* out_e, uint* out_f, uint* out_g, uint* out_h) {
+  uint a=*out_a, b=*out_b, c=*out_c, d=*out_d;
+  uint e=*out_e, f=*out_f, g=*out_g, h=*out_h;
   RSTEP(w3,  K256[3]);
   RSTEP(w4,  K256[4]);
   RSTEP(w5,  K256[5]);
@@ -214,15 +210,17 @@ static inline void sha256_from_r3(
   RSTEP(w14, K256[14]);
   RSTEP(w15, K256[15]);
   SHA256_EXPAND_16_63;
-  *a=a; *b=b; *c=c; *d=d; *e=e; *f=f; *g=g; *h=h;
+  *out_a=a; *out_b=b; *out_c=c; *out_d=d;
+  *out_e=e; *out_f=f; *out_g=g; *out_h=h;
 }
 
 static inline void sha256_from_r5(
     uint w0, uint w1, uint w2, uint w3, uint w4, uint w5, uint w6, uint w7,
     uint w8, uint w9, uint w10, uint w11, uint w12, uint w13, uint w14, uint w15,
-    uint* a, uint* b, uint* c, uint* d, uint* e, uint* f, uint* g, uint* h) {
-  uint a0=*a,b0=*b,c0=*c,d0=*d,e0=*e,f0=*f,g0=*g,h0=*h;
-  uint a=a0,b=b0,c=c0,d=d0,e=e0,f=f0,g=g0,h=h0;
+    uint* out_a, uint* out_b, uint* out_c, uint* out_d,
+    uint* out_e, uint* out_f, uint* out_g, uint* out_h) {
+  uint a=*out_a, b=*out_b, c=*out_c, d=*out_d;
+  uint e=*out_e, f=*out_f, g=*out_g, h=*out_h;
 
   RSTEP(w5,  K256[5]);
   RSTEP(w6,  K256[6]);
@@ -237,7 +235,8 @@ static inline void sha256_from_r5(
   RSTEP(w15, K256[15]);
   SHA256_EXPAND_16_63;
 
-  *a=a; *b=b; *c=c; *d=d; *e=e; *f=f; *g=g; *h=h;
+  *out_a=a; *out_b=b; *out_c=c; *out_d=d;
+  *out_e=e; *out_f=f; *out_g=g; *out_h=h;
 }
 
 __attribute__((work_group_size_hint(256,1,1)))

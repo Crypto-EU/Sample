@@ -1,0 +1,35 @@
+# 1Pool — SASEUL mining pool configuration
+#
+# Modes:
+#   proxy  — fetch jobs from RabbitMiner (or another 1Pool) and re-serve to your miners
+#   demo   — local synthetic jobs for protocol testing (no upstream)
+
+pool_name: "1Pool"
+mode: proxy
+pool_fee_percent: 1.0
+
+listen_host: "0.0.0.0"
+listen_port: 1911          # plain TCP (HiveOS / 1Miner: --pool HOST:1911)
+tls_port: 0                # e.g. 1901 with cert/key for TLS miners
+tls_cert: ""
+tls_key: ""
+
+http_host: "0.0.0.0"
+http_port: 8080
+
+# Upstream RabbitMiner (or another 1Pool). Wallet = your SASEUL address.
+upstream:
+  - "nl.rabbitminer.cc:1901"
+  - "fi.rabbitminer.cc:1901"
+upstream_wallet: ""        # REQUIRED in proxy mode — set your SL wallet
+upstream_worker: "1pool"
+upstream_password: "x"
+# upstream_tls: null       # null = auto (1901/1921 = TLS, 1911/1931 = TCP)
+
+default_share_difficulty: 100000000000
+max_timestamp_drift_us: 5000000
+job_refresh_sec: 2.0
+verify_shares: true
+forward_shares: true
+
+state_file: "data/1pool-state.json"

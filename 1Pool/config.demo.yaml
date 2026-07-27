@@ -1,0 +1,14 @@
+# Demo mode — no upstream required. Point 1Miner at this pool to test protocol.
+pool_name: "1Pool-Demo"
+mode: demo
+pool_fee_percent: 0
+listen_host: "0.0.0.0"
+listen_port: 1911
+http_host: "0.0.0.0"
+http_port: 8080
+default_share_difficulty: 1
+verify_shares: true
+forward_shares: false
+demo_miner: "00000000000000000000000000000000000000000000"
+demo_validator: "00000000000000000000000000000000000000000000"
+state_file: "data/1pool-demo-state.json"

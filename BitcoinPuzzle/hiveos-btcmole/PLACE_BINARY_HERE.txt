@@ -1,0 +1,7 @@
+Download the AMD Linux build from https://github.com/keymole/btcmole
+(file: linux/bmXXX.linux_amd64_amdgpu.zip), extract it, and place/rename
+the executable here as:
+
+  btcmole
+
+Then pack the directory into a HiveOS custom miner tarball (see README.md).

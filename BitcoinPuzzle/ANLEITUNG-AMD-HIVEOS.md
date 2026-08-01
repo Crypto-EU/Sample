@@ -346,6 +346,9 @@ GPU mit Monitor etwas entlasten:
 
 # Teil E — Als HiveOS Custom Miner einrichten (empfohlen)
 
+> **Ausführliche Flight-Sheet-Anleitung (Felder, Vorlagen, Fehler):**  
+> → [ANLEITUNG-FLIGHT-SHEET.md](./ANLEITUNG-FLIGHT-SHEET.md)
+
 Damit der Solver nach Reboot wieder startet und über Flight Sheets gesteuert wird.
 
 ## Schritt E1 — Wrapper-Skripte holen

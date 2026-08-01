@@ -1,5 +1,13 @@
 # Bitcoin Puzzle — AMD / HiveOS
 
-- **Ausführliche Schritt-für-Schritt-Anleitung (DE):** [ANLEITUNG-AMD-HIVEOS.md](./ANLEITUNG-AMD-HIVEOS.md)
-  - Teil A–K: Verstehen → HiveOS vorbereiten → BtcMole installieren → Solo #71 → Flight Sheet → Betrieb → Fund → Fehlerbehebung → Checkliste
-- **HiveOS Custom-Miner-Vorlage:** [hiveos-btcmole/](./hiveos-btcmole/)
+## Anleitungen
+
+| Dokument | Für wen |
+|----------|---------|
+| **[ANLEITUNG-FLIGHT-SHEET.md](./ANLEITUNG-FLIGHT-SHEET.md)** | **HiveOS Flight Sheet Schritt für Schritt** (Paket, Felder, Apply, Logs, Fehler) |
+| [ANLEITUNG-AMD-HIVEOS.md](./ANLEITUNG-AMD-HIVEOS.md) | Gesamtüberblick A–K (SSH, ROCm, Solo/Pool, Fund, Checkliste) |
+
+## Custom Miner
+
+- **HiveOS-Wrapper:** [hiveos-btcmole/](./hiveos-btcmole/)
+- Binary von BtcMole (`linux/*_amdgpu.zip`) als `btcmole` ins Paket legen, tar.gz hosten, in der Flight Sheet als Custom Miner eintragen.
